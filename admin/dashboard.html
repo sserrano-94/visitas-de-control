@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Dashboard — Control de Visitas</title>
+<link rel="stylesheet" href="../css/style.css" />
+</head>
+<body>
+  <div class="topbar" id="topbar"></div>
+  <main>
+    <h1>Dashboard — <span id="mesLabel"></span></h1>
+    <p class="subtitle">Meta vs. visitas completadas en el mes en curso.</p>
+
+    <div class="stat-grid" id="statGrid"></div>
+
+    <h2>Detalle por campo</h2>
+    <div class="form-row" style="max-width:320px;">
+      <div><input type="text" id="buscar" placeholder="Buscar por campo o zona…" /></div>
+    </div>
+    <table id="tabla">
+      <thead>
+        <tr><th>Zona</th><th>Campo</th><th>Supervisor habitual</th><th>Meta</th><th>Hecho</th><th>Pendiente</th><th>Avance</th></tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script type="module">
+    import { sb } from '../js/supabaseClient.js';
+    import { requireAdmin } from '../js/auth.js';
+    import { renderTopbar } from '../js/nav.js';
+    import { badgeSupervisor, escapeHtml, toISODate } from '../js/helpers.js';
+
+    const profile = await requireAdmin('../mi-semana.html', '../login.html');
+    if (!profile) throw new Error('no-admin');
+    renderTopbar(profile, '../');
+
+    const MESES = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
+    const hoy = new Date();
+    document.getElementById('mesLabel').textContent = `${MESES[hoy.getMonth()]} ${hoy.getFullYear()}`;
+
+    const inicioMes = toISODate(new Date(hoy.getFullYear(), hoy.getMonth(), 1));
+    const finMes = toISODate(new Date(hoy.getFullYear(), hoy.getMonth() + 1, 0));
+
+    const [{ data: campos, error: e1 }, { data: visitas, error: e2 }] = await Promise.all([
+      sb.from('campos').select('id, nombre, zona, meta_mensual, supervisor_habitual_id, profiles(nombre_completo)').eq('activo', true),
+      sb.from('visitas').select('campo_id, supervisor_id, profiles!visitas_supervisor_id_fkey(nombre_completo)')
+        .eq('estado', 'completada').gte('fecha_realizada', inicioMes).lte('fecha_realizada', finMes),
+    ]);
+
+    if (e1 || e2) {
+      document.querySelector('main').insertAdjacentHTML('afterbegin', `<div class="msg msg-error">Error cargando datos: ${(e1 || e2).message}</div>`);
+    }
+
+    const hechoPorCampo = {};
+    for (const v of visitas || []) hechoPorCampo[v.campo_id] = (hechoPorCampo[v.campo_id] || 0) + 1;
+
+    // Resumen por supervisor: meta agrupada por supervisor habitual del campo,
+    // hecho agrupado por quién realizó realmente la visita.
+    const metaPorSupervisor = {};
+    for (const c of campos || []) {
+      const nombre = c.profiles?.nombre_completo || 'Sin asignar';
+      metaPorSupervisor[nombre] = metaPorSupervisor[nombre] || { meta: 0, hecho: 0 };
+      metaPorSupervisor[nombre].meta += Number(c.meta_mensual || 0);
+    }
+    for (const v of visitas || []) {
+      const nombre = v.profiles?.nombre_completo || 'Sin asignar';
+      metaPorSupervisor[nombre] = metaPorSupervisor[nombre] || { meta: 0, hecho: 0 };
+      metaPorSupervisor[nombre].hecho += 1;
+    }
+
+    const statGrid = document.getElementById('statGrid');
+    statGrid.innerHTML = '';
+    const nombres = Object.keys(metaPorSupervisor).sort();
+    let totalMeta = 0, totalHecho = 0;
+    for (const nombre of nombres) {
+      const { meta, hecho } = metaPorSupervisor[nombre];
+      totalMeta += meta; totalHecho += hecho;
+      const pct = meta > 0 ? Math.round((hecho / meta) * 100) : 0;
+      statGrid.insertAdjacentHTML('beforeend', `
+        <div class="stat">
+          <div class="lbl">${badgeSupervisor(nombre === 'Sin asignar' ? null : nombre)}</div>
+          <div class="n">${hecho} / ${meta}</div>
+          <div class="lbl">${pct}% de la meta del mes</div>
+          <div class="progress-bar"><div style="width:${Math.min(pct,100)}%;"></div></div>
+        </div>`);
+    }
+    const pctTotal = totalMeta > 0 ? Math.round((totalHecho / totalMeta) * 100) : 0;
+    statGrid.insertAdjacentHTML('beforeend', `
+      <div class="stat" style="border-color:#1F4E78;">
+        <div class="lbl"><strong>Total</strong></div>
+        <div class="n">${totalHecho} / ${totalMeta}</div>
+        <div class="lbl">${pctTotal}% del mes</div>
+        <div class="progress-bar"><div style="width:${Math.min(pctTotal,100)}%;"></div></div>
+      </div>`);
+
+    let filas = (campos || []).map((c) => {
+      const hecho = hechoPorCampo[c.id] || 0;
+      const meta = Number(c.meta_mensual || 0);
+      const pendiente = meta - hecho;
+      const pct = meta > 0 ? Math.round((hecho / meta) * 100) : (hecho > 0 ? 100 : 0);
+      return { ...c, hecho, meta, pendiente, pct };
+    }).sort((a, b) => (a.zona || '').localeCompare(b.zona || '') || a.nombre.localeCompare(b.nombre));
+
+    function pintar() {
+      const filtro = document.getElementById('buscar').value.trim().toLowerCase();
+      const tbody = document.querySelector('#tabla tbody');
+      tbody.innerHTML = '';
+      const visibles = filas.filter(c => !filtro || c.nombre.toLowerCase().includes(filtro) || (c.zona||'').toLowerCase().includes(filtro));
+      for (const c of visibles) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td>${escapeHtml(c.zona || '')}</td>
+          <td><strong>${escapeHtml(c.nombre)}</strong></td>
+          <td>${badgeSupervisor(c.profiles?.nombre_completo)}</td>
+          <td>${c.meta}</td>
+          <td>${c.hecho}</td>
+          <td>${c.pendiente > 0 ? c.pendiente : 0}</td>
+          <td style="min-width:120px;">${c.pct}%
+            <div class="progress-bar"><div style="width:${Math.min(c.pct,100)}%;"></div></div>
+          </td>`;
+        tbody.appendChild(tr);
+      }
+    }
+    document.getElementById('buscar').addEventListener('input', pintar);
+    pintar();
+  </script>
+</body>
+</html>

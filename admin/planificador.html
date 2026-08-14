@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Planificador semanal — Control de Visitas</title>
+<link rel="stylesheet" href="../css/style.css" />
+</head>
+<body>
+  <div class="topbar" id="topbar"></div>
+  <main>
+    <h1>Planificador semanal</h1>
+    <p class="subtitle">Elige a qué campos va cada supervisor esta semana. Los campos sin ninguna visita este mes aparecen marcados como <span class="tag-atrasado">atrasado</span> y se muestran primero dentro de su zona.</p>
+
+    <div class="week-nav">
+      <button class="secondary" id="prevWeek">← Semana anterior</button>
+      <strong id="weekLabel"></strong>
+      <button class="secondary" id="nextWeek">Semana siguiente →</button>
+    </div>
+
+    <div id="msg"></div>
+
+    <h2>Ya planificado para esta semana</h2>
+    <table id="tablaPlan">
+      <thead><tr><th>Día</th><th>Campo</th><th>Zona</th><th>Supervisor</th><th>Estado</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+
+    <h2>Agregar visitas a la semana</h2>
+    <div class="form-row" style="max-width:320px;">
+      <div><input type="text" id="buscar" placeholder="Buscar por campo o zona…" /></div>
+    </div>
+    <table id="tablaCampos">
+      <thead>
+        <tr>
+          <th></th><th>Campo</th><th>Zona</th><th>Meta/mes</th><th>Hecho este mes</th><th>Pendiente</th>
+          <th>Supervisor</th><th>Día</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+    <div style="margin-top:14px;">
+      <button id="btnGuardarSeleccion">Guardar visitas seleccionadas</button>
+    </div>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script type="module">
+    import { sb } from '../js/supabaseClient.js';
+    import { requireAdmin } from '../js/auth.js';
+    import { renderTopbar } from '../js/nav.js';
+    import { mondayOf, addDays, diasHabiles, nombreDia, fechaCorta, toISODate, rangoSemanaTexto, badgeSupervisor, escapeHtml } from '../js/helpers.js';
+
+    const profile = await requireAdmin('../mi-semana.html', '../login.html');
+    if (!profile) throw new Error('no-admin');
+    renderTopbar(profile, '../');
+
+    // Por defecto: la semana siguiente a la actual (el caso de uso más común).
+    let monday = addDays(mondayOf(new Date()), 7);
+
+    let supervisores = [];
+    let campos = [];
+    let hechoPorCampo = {}; // campo_id -> n visitas completadas este mes calendario
+    let planSemana = [];    // visitas ya existentes para la semana elegida
+
+    document.getElementById('prevWeek').addEventListener('click', () => { monday = addDays(monday, -7); cargarTodo(); });
+    document.getElementById('nextWeek').addEventListener('click', () => { monday = addDays(monday, 7); cargarTodo(); });
+    document.getElementById('buscar').addEventListener('input', pintarTablaCampos);
+    document.getElementById('btnGuardarSeleccion').addEventListener('click', guardarSeleccion);
+
+    async function cargarSupervisores() {
+      const { data, error } = await sb.from('profiles').select('id, nombre_completo').eq('activo', true).order('nombre_completo');
+      if (error) { console.error(error); return; }
+      supervisores = data || [];
+    }
+
+    async function cargarCampos() {
+      const { data, error } = await sb
+        .from('campos')
+        .select('id, nombre, zona, meta_mensual, supervisor_habitual_id, profiles(nombre_completo)')
+        .eq('activo', true)
+        .order('zona')
+        .order('nombre');
+      if (error) { console.error(error); return; }
+      campos = data || [];
+    }
+
+    async function cargarHechoEsteMes() {
+      const hoy = new Date();
+      const inicioMes = toISODate(new Date(hoy.getFullYear(), hoy.getMonth(), 1));
+      const finMes = toISODate(new Date(hoy.getFullYear(), hoy.getMonth() + 1, 0));
+      const { data, error } = await sb
+        .from('visitas')
+        .select('campo_id')
+        .eq('estado', 'completada')
+        .gte('fecha_realizada', inicioMes)
+        .lte('fecha_realizada', finMes);
+      hechoPorCampo = {};
+      if (error) { console.error(error); return; }
+      for (const v of data || []) {
+        hechoPorCampo[v.campo_id] = (hechoPorCampo[v.campo_id] || 0) + 1;
+      }
+    }
+
+    async function cargarPlanSemana() {
+      const friday = addDays(monday, 4);
+      const { data, error } = await sb
+        .from('visitas')
+        .select('id, fecha_planificada, estado, campos(nombre, zona), profiles!visitas_supervisor_id_fkey(nombre_completo)')
+        .gte('fecha_planificada', toISODate(monday))
+        .lte('fecha_planificada', toISODate(friday))
+        .order('fecha_planificada');
+      if (error) { console.error(error); planSemana = []; return; }
+      planSemana = data || [];
+    }
+
+    function pintarPlanSemana() {
+      const tbody = document.querySelector('#tablaPlan tbody');
+      tbody.innerHTML = '';
+      if (planSemana.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="6">Todavía no hay nada planificado para esta semana.</td></tr>`;
+        return;
+      }
+      for (const v of planSemana) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td>${v.fecha_planificada}</td>
+          <td>${escapeHtml(v.campos?.nombre || '')}</td>
+          <td>${escapeHtml(v.campos?.zona || '')}</td>
+          <td>${badgeSupervisor(v.profiles?.nombre_completo)}</td>
+          <td><span class="estado-${v.estado}">${v.estado}</span></td>
+          <td></td>`;
+        if (v.estado === 'planificada') {
+          const btn = document.createElement('button');
+          btn.className = 'small secondary';
+          btn.textContent = 'Quitar';
+          btn.addEventListener('click', () => quitar(v.id));
+          tr.lastElementChild.appendChild(btn);
+        }
+        tbody.appendChild(tr);
+      }
+    }
+
+    async function quitar(id) {
+      if (!confirm('¿Quitar esta visita planificada?')) return;
+      const { error } = await sb.from('visitas').delete().eq('id', id);
+      if (error) { alert('Error: ' + error.message); return; }
+      await cargarPlanSemana();
+      pintarPlanSemana();
+    }
+
+    function pintarTablaCampos() {
+      const filtro = document.getElementById('buscar').value.trim().toLowerCase();
+      const dias = diasHabiles(monday);
+      const yaPlanificados = new Set(planSemana.filter(v => v.estado !== 'cancelada').map(v => v.campos?.nombre));
+
+      let filas = campos.filter((c) =>
+        !filtro || c.nombre.toLowerCase().includes(filtro) || (c.zona || '').toLowerCase().includes(filtro)
+      );
+
+      // Orden: primero atrasados (0 hecho este mes), luego por pendiente descendente, agrupado por zona.
+      filas = filas.map((c) => {
+        const hecho = hechoPorCampo[c.id] || 0;
+        const pendiente = (c.meta_mensual || 0) - hecho;
+        return { ...c, hecho, pendiente, atrasado: hecho === 0 && (c.meta_mensual || 0) > 0 };
+      }).sort((a, b) => {
+        if ((a.zona || '') !== (b.zona || '')) return (a.zona || '').localeCompare(b.zona || '');
+        if (a.atrasado !== b.atrasado) return a.atrasado ? -1 : 1;
+        return b.pendiente - a.pendiente;
+      });
+
+      const tbody = document.querySelector('#tablaCampos tbody');
+      tbody.innerHTML = '';
+      for (const c of filas) {
+        const tr = document.createElement('tr');
+        const yaEsta = yaPlanificados.has(c.nombre);
+        tr.innerHTML = `
+          <td><input type="checkbox" class="chkCampo" data-id="${c.id}" ${yaEsta ? 'disabled' : ''}/></td>
+          <td><strong>${escapeHtml(c.nombre)}</strong>${c.atrasado ? ' <span class="tag-atrasado">atrasado</span>' : ''}${yaEsta ? ' <span class="subtitle" style="font-size:0.78rem;">(ya planificado)</span>' : ''}</td>
+          <td>${escapeHtml(c.zona || '')}</td>
+          <td>${c.meta_mensual}</td>
+          <td>${c.hecho}</td>
+          <td>${c.pendiente > 0 ? c.pendiente : 0}</td>
+          <td></td>
+          <td></td>`;
+
+        const tdSup = tr.children[6];
+        const selSup = document.createElement('select');
+        selSup.className = 'selSup';
+        selSup.innerHTML = '<option value="">Elegir…</option>' + supervisores.map(s =>
+          `<option value="${s.id}" ${s.id === c.supervisor_habitual_id ? 'selected' : ''}>${escapeHtml(s.nombre_completo)}</option>`
+        ).join('');
+        tdSup.appendChild(selSup);
+
+        const tdDia = tr.children[7];
+        const selDia = document.createElement('select');
+        selDia.className = 'selDia';
+        selDia.innerHTML = dias.map(d => `<option value="${toISODate(d)}">${nombreDia(d)} ${fechaCorta(d)}</option>`).join('');
+        tdDia.appendChild(selDia);
+
+        tbody.appendChild(tr);
+      }
+    }
+
+    async function guardarSeleccion() {
+      const checks = Array.from(document.querySelectorAll('.chkCampo:checked'));
+      if (checks.length === 0) {
+        alert('Marca al menos un campo.');
+        return;
+      }
+      const filas = [];
+      for (const chk of checks) {
+        const tr = chk.closest('tr');
+        const supervisorId = tr.querySelector('.selSup').value;
+        const dia = tr.querySelector('.selDia').value;
+        if (!supervisorId) {
+          alert('Falta elegir supervisor en algún campo marcado.');
+          return;
+        }
+        filas.push({
+          campo_id: chk.dataset.id,
+          supervisor_id: supervisorId,
+          fecha_planificada: dia,
+          estado: 'planificada',
+          creado_por: profile.id,
+        });
+      }
+      const { error } = await sb.from('visitas').insert(filas);
+      const msg = document.getElementById('msg');
+      if (error) {
+        msg.innerHTML = `<div class="msg msg-error">No se pudo guardar: ${error.message}</div>`;
+        return;
+      }
+      msg.innerHTML = `<div class="msg msg-ok">Se agregaron ${filas.length} visita(s) a la semana.</div>`;
+      await cargarPlanSemana();
+      pintarPlanSemana();
+      pintarTablaCampos();
+    }
+
+    async function cargarTodo() {
+      document.getElementById('weekLabel').textContent = rangoSemanaTexto(monday);
+      document.getElementById('msg').innerHTML = '';
+      await Promise.all([cargarCampos(), cargarHechoEsteMes(), cargarPlanSemana()]);
+      pintarPlanSemana();
+      pintarTablaCampos();
+    }
+
+    await cargarSupervisores();
+    await cargarTodo();
+  </script>
+</body>
+</html>
