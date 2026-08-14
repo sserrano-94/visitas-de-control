@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Mi semana — Control de Visitas</title>
+<link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <div class="topbar" id="topbar"></div>
+  <main>
+    <h1>Mi semana</h1>
+    <p class="subtitle" id="subtitle"></p>
+
+    <div class="week-nav">
+      <button class="secondary" id="prevWeek">← Semana anterior</button>
+      <strong id="weekLabel"></strong>
+      <button class="secondary" id="nextWeek">Semana siguiente →</button>
+    </div>
+
+    <div id="msg"></div>
+    <div id="dias"></div>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script type="module">
+    import { sb } from './js/supabaseClient.js';
+    import { requireAuth, getProfile } from './js/auth.js';
+    import { renderTopbar } from './js/nav.js';
+    import { mondayOf, addDays, diasHabiles, nombreDia, fechaCorta, toISODate, rangoSemanaTexto, badgeSupervisor, escapeHtml } from './js/helpers.js';
+
+    const session = await requireAuth('login.html');
+    if (!session) throw new Error('no-session');
+    const profile = await getProfile();
+    renderTopbar(profile, '');
+    document.getElementById('subtitle').textContent = `Visitas asignadas a ${profile.nombre_completo}.`;
+
+    let monday = mondayOf(new Date());
+
+    document.getElementById('prevWeek').addEventListener('click', () => { monday = addDays(monday, -7); cargar(); });
+    document.getElementById('nextWeek').addEventListener('click', () => { monday = addDays(monday, 7); cargar(); });
+
+    async function cargar() {
+      document.getElementById('weekLabel').textContent = rangoSemanaTexto(monday);
+      const friday = addDays(monday, 4);
+      const msg = document.getElementById('msg');
+      msg.innerHTML = '';
+
+      const { data, error } = await sb
+        .from('visitas')
+        .select('id, fecha_planificada, fecha_realizada, estado, notas, campos(nombre, zona, superficie_ha, meta_mensual)')
+        .eq('supervisor_id', profile.id)
+        .gte('fecha_planificada', toISODate(monday))
+        .lte('fecha_planificada', toISODate(friday))
+        .order('fecha_planificada', { ascending: true });
+
+      if (error) {
+        msg.innerHTML = `<div class="msg msg-error">Error cargando tus visitas: ${error.message}</div>`;
+        return;
+      }
+
+      const dias = diasHabiles(monday);
+      const cont = document.getElementById('dias');
+      cont.innerHTML = '';
+
+      for (const dia of dias) {
+        const iso = toISODate(dia);
+        const delDia = (data || []).filter((v) => v.fecha_planificada === iso);
+        const card = document.createElement('div');
+        card.className = 'card';
+        card.innerHTML = `<h2 style="margin-top:0;">${nombreDia(dia)} ${fechaCorta(dia)}</h2>`;
+
+        if (delDia.length === 0) {
+          card.innerHTML += `<p class="subtitle">Sin visitas planificadas.</p>`;
+        } else {
+          const table = document.createElement('table');
+          table.innerHTML = `
+            <thead><tr><th>Campo</th><th>Zona</th><th>Estado</th><th>Notas</th><th></th></tr></thead>
+            <tbody></tbody>`;
+          const tbody = table.querySelector('tbody');
+          for (const v of delDia) {
+            const tr = document.createElement('tr');
+            const campo = v.campos || {};
+            tr.innerHTML = `
+              <td><strong>${escapeHtml(campo.nombre)}</strong></td>
+              <td>${escapeHtml(campo.zona || '')}</td>
+              <td><span class="estado-${v.estado}">${v.estado}</span></td>
+              <td>${escapeHtml(v.notas || '')}</td>
+              <td></td>`;
+            const tdAcciones = tr.lastElementChild;
+            if (v.estado === 'planificada') {
+              const btnOk = document.createElement('button');
+              btnOk.className = 'small';
+              btnOk.textContent = 'Marcar visitada';
+              btnOk.addEventListener('click', () => marcar(v.id, 'completada'));
+
+              const btnNo = document.createElement('button');
+              btnNo.className = 'small secondary';
+              btnNo.style.marginLeft = '6px';
+              btnNo.textContent = 'No pude ir';
+              btnNo.addEventListener('click', () => marcar(v.id, 'reprogramada'));
+
+              tdAcciones.appendChild(btnOk);
+              tdAcciones.appendChild(btnNo);
+            }
+            tbody.appendChild(tr);
+          }
+          card.appendChild(table);
+        }
+        cont.appendChild(card);
+      }
+    }
+
+    async function marcar(visitaId, estado) {
+      const notaTexto = prompt(estado === 'completada'
+        ? '¿Alguna nota de la visita? (opcional)'
+        : '¿Por qué no se pudo hacer? (para que Sergio la reprograme)');
+      if (notaTexto === null) return; // canceló
+
+      const payload = { estado, notas: notaTexto || null };
+      if (estado === 'completada') {
+        payload.fecha_realizada = toISODate(new Date());
+      }
+      const { error } = await sb.from('visitas').update(payload).eq('id', visitaId);
+      const msg = document.getElementById('msg');
+      if (error) {
+        msg.innerHTML = `<div class="msg msg-error">No se pudo guardar: ${error.message}</div>`;
+        return;
+      }
+      msg.innerHTML = `<div class="msg msg-ok">Guardado.</div>`;
+      cargar();
+    }
+
+    cargar();
+  </script>
+</body>
+</html>

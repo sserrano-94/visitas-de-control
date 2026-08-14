@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Control de Visitas</title>
+</head>
+<body>
+  <p style="font-family: Arial; padding: 40px; text-align:center;">Cargando…</p>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script type="module">
+    import { sb } from './js/supabaseClient.js';
+    const { data: { session } } = await sb.auth.getSession();
+    window.location.href = session ? 'mi-semana.html' : 'login.html';
+  </script>
+</body>
+</html>

@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Historial — Control de Visitas</title>
+<link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <div class="topbar" id="topbar"></div>
+  <main>
+    <h1>Historial de visitas</h1>
+    <p class="subtitle" id="subtitle"></p>
+
+    <div class="card">
+      <div class="form-row">
+        <div>
+          <label for="fCampo">Campo</label>
+          <input type="text" id="fCampo" placeholder="Buscar por nombre de campo…" />
+        </div>
+        <div>
+          <label for="fSupervisor">Supervisor</label>
+          <select id="fSupervisor"><option value="">Todos</option></select>
+        </div>
+        <div>
+          <label for="fEstado">Estado</label>
+          <select id="fEstado">
+            <option value="">Todos</option>
+            <option value="planificada">Planificada</option>
+            <option value="completada">Completada</option>
+            <option value="reprogramada">Reprogramada</option>
+            <option value="cancelada">Cancelada</option>
+          </select>
+        </div>
+        <div>
+          <label for="fDesde">Desde</label>
+          <input type="date" id="fDesde" />
+        </div>
+        <div>
+          <label for="fHasta">Hasta</label>
+          <input type="date" id="fHasta" />
+        </div>
+      </div>
+      <button id="btnBuscar">Buscar</button>
+    </div>
+
+    <div id="msg"></div>
+    <table id="tabla">
+      <thead>
+        <tr><th>Fecha planificada</th><th>Fecha realizada</th><th>Campo</th><th>Zona</th><th>Supervisor</th><th>Estado</th><th>Notas</th></tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script type="module">
+    import { sb } from './js/supabaseClient.js';
+    import { requireAuth, getProfile } from './js/auth.js';
+    import { renderTopbar } from './js/nav.js';
+    import { badgeSupervisor, escapeHtml, toISODate, addDays } from './js/helpers.js';
+
+    const session = await requireAuth('login.html');
+    if (!session) throw new Error('no-session');
+    const profile = await getProfile();
+    renderTopbar(profile, '');
+    document.getElementById('subtitle').textContent = profile.rol === 'admin'
+      ? 'Todas las visitas registradas.'
+      : `Tus visitas registradas, ${profile.nombre_completo}.`;
+
+    // Rango por defecto: últimos 60 días
+    const hoy = new Date();
+    document.getElementById('fHasta').value = toISODate(hoy);
+    document.getElementById('fDesde').value = toISODate(addDays(hoy, -60));
+
+    // Cargar supervisores para el filtro (solo tiene sentido para el admin, pero no molesta)
+    const { data: sups } = await sb.from('profiles').select('id, nombre_completo').eq('activo', true).order('nombre_completo');
+    const selSup = document.getElementById('fSupervisor');
+    for (const s of sups || []) {
+      const opt = document.createElement('option');
+      opt.value = s.id;
+      opt.textContent = s.nombre_completo;
+      selSup.appendChild(opt);
+    }
+
+    document.getElementById('btnBuscar').addEventListener('click', buscar);
+    buscar();
+
+    async function buscar() {
+      const msg = document.getElementById('msg');
+      msg.innerHTML = '';
+      let q = sb
+        .from('visitas')
+        .select('fecha_planificada, fecha_realizada, estado, notas, campos(nombre, zona), profiles!visitas_supervisor_id_fkey(nombre_completo)')
+        .order('fecha_planificada', { ascending: false })
+        .limit(300);
+
+      const desde = document.getElementById('fDesde').value;
+      const hasta = document.getElementById('fHasta').value;
+      const sup = document.getElementById('fSupervisor').value;
+      const estado = document.getElementById('fEstado').value;
+      const campoTexto = document.getElementById('fCampo').value.trim();
+
+      if (desde) q = q.gte('fecha_planificada', desde);
+      if (hasta) q = q.lte('fecha_planificada', hasta);
+      if (sup) q = q.eq('supervisor_id', sup);
+      if (estado) q = q.eq('estado', estado);
+
+      const { data, error } = await q;
+      if (error) {
+        msg.innerHTML = `<div class="msg msg-error">Error: ${error.message}</div>`;
+        return;
+      }
+
+      let filas = data || [];
+      if (campoTexto) {
+        const t = campoTexto.toLowerCase();
+        filas = filas.filter((v) => (v.campos?.nombre || '').toLowerCase().includes(t));
+      }
+
+      const tbody = document.querySelector('#tabla tbody');
+      tbody.innerHTML = '';
+      if (filas.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="7">No hay visitas con esos filtros.</td></tr>`;
+        return;
+      }
+      for (const v of filas) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td>${v.fecha_planificada}</td>
+          <td>${v.fecha_realizada || '—'}</td>
+          <td>${escapeHtml(v.campos?.nombre || '')}</td>
+          <td>${escapeHtml(v.campos?.zona || '')}</td>
+          <td>${badgeSupervisor(v.profiles?.nombre_completo)}</td>
+          <td><span class="estado-${v.estado}">${v.estado}</span></td>
+          <td>${escapeHtml(v.notas || '')}</td>`;
+        tbody.appendChild(tr);
+      }
+    }
+  </script>
+</body>
+</html>
