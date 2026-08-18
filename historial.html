@@ -16,7 +16,7 @@
       <div class="form-row">
         <div>
           <label for="fCampo">Campo</label>
-          <input type="text" id="fCampo" placeholder="Buscar por nombre de campo…" />
+          <input type="text" id="fCampo" placeholder="Buscar por campo o agrícola…" />
         </div>
         <div>
           <label for="fSupervisor">Supervisor</label>
@@ -32,22 +32,23 @@
             <option value="cancelada">Cancelada</option>
           </select>
         </div>
-        <div>
-          <label for="fDesde">Desde</label>
-          <input type="date" id="fDesde" />
-        </div>
-        <div>
-          <label for="fHasta">Hasta</label>
-          <input type="date" id="fHasta" />
-        </div>
       </div>
-      <button id="btnBuscar">Buscar</button>
     </div>
 
     <div id="msg"></div>
+
+    <div class="week-nav">
+      <button class="secondary" id="prevMes">← Mes anterior</button>
+      <strong id="mesLabel"></strong>
+      <button class="secondary" id="nextMes">Mes siguiente →</button>
+    </div>
+
+    <div class="calendario-mes" id="calendarioMes"></div>
+
+    <h2 id="tituloDia">Selecciona un día del calendario para ver el detalle.</h2>
     <table id="tabla">
       <thead>
-        <tr><th>Fecha planificada</th><th>Fecha realizada</th><th>Campo</th><th>Zona</th><th>Supervisor</th><th>Estado</th><th>Notas</th></tr>
+        <tr><th>Campo</th><th>Zona</th><th>Supervisor</th><th>Estado</th><th>Fecha realizada</th><th>Notas</th></tr>
       </thead>
       <tbody></tbody>
     </table>
@@ -58,23 +59,21 @@
     import { sb } from './js/supabaseClient.js';
     import { requireAuth, getProfile } from './js/auth.js';
     import { renderTopbar } from './js/nav.js';
-    import { badgeSupervisor, escapeHtml, toISODate, addDays } from './js/helpers.js';
+    import { badgeSupervisor, escapeHtml, toISODate, supervisorClase } from './js/helpers.js';
 
     const session = await requireAuth('login.html');
     if (!session) throw new Error('no-session');
     const profile = await getProfile();
     renderTopbar(profile, '');
     document.getElementById('subtitle').textContent = profile.rol === 'admin'
-      ? 'Todas las visitas registradas.'
+      ? 'Todas las visitas registradas, por mes.'
       : `Tus visitas registradas, ${profile.nombre_completo}.`;
 
-    // Rango por defecto: últimos 60 días
-    const hoy = new Date();
-    document.getElementById('fHasta').value = toISODate(hoy);
-    document.getElementById('fDesde').value = toISODate(addDays(hoy, -60));
+    const MESES = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
+    const MESES_CORTOS = ['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
 
-    // Cargar supervisores para el filtro (solo tiene sentido para el admin, pero no molesta)
-    const { data: sups } = await sb.from('profiles').select('id, nombre_completo').eq('activo', true).order('nombre_completo');
+    // Cargar supervisores para el filtro
+    const { data: sups } = await sb.from('profiles').select('id, nombre_completo').eq('activo', true).eq('rol', 'supervisor').order('nombre_completo');
     const selSup = document.getElementById('fSupervisor');
     for (const s of sups || []) {
       const opt = document.createElement('option');
@@ -83,60 +82,166 @@
       selSup.appendChild(opt);
     }
 
-    document.getElementById('btnBuscar').addEventListener('click', buscar);
-    buscar();
+    let mesActual = new Date();
+    mesActual.setDate(1);
+    mesActual.setHours(0, 0, 0, 0);
+    let diaSeleccionado = toISODate(new Date()); // por defecto, hoy (si cae en el mes mostrado)
+    let visitasMes = [];
 
-    async function buscar() {
+    document.getElementById('prevMes').addEventListener('click', () => {
+      mesActual.setMonth(mesActual.getMonth() - 1);
+      diaSeleccionado = null;
+      cargarMes();
+    });
+    document.getElementById('nextMes').addEventListener('click', () => {
+      mesActual.setMonth(mesActual.getMonth() + 1);
+      diaSeleccionado = null;
+      cargarMes();
+    });
+    document.getElementById('fCampo').addEventListener('input', () => { pintarCalendario(); pintarDetalle(); });
+    document.getElementById('fSupervisor').addEventListener('change', cargarMes);
+    document.getElementById('fEstado').addEventListener('change', cargarMes);
+
+    async function cargarMes() {
       const msg = document.getElementById('msg');
       msg.innerHTML = '';
+      document.getElementById('mesLabel').textContent = `${MESES[mesActual.getMonth()]} ${mesActual.getFullYear()}`;
+
+      const primerDia = new Date(mesActual.getFullYear(), mesActual.getMonth(), 1);
+      const ultimoDia = new Date(mesActual.getFullYear(), mesActual.getMonth() + 1, 0);
+
       let q = sb
         .from('visitas')
-        .select('fecha_planificada, fecha_realizada, estado, notas, campos(nombre, zona), profiles!visitas_supervisor_id_fkey(nombre_completo)')
-        .order('fecha_planificada', { ascending: false })
-        .limit(300);
+        .select('id, fecha_planificada, fecha_realizada, estado, notas, campos(nombre, zona, cliente), profiles!visitas_supervisor_id_fkey(nombre_completo)')
+        .gte('fecha_planificada', toISODate(primerDia))
+        .lte('fecha_planificada', toISODate(ultimoDia))
+        .order('fecha_planificada');
 
-      const desde = document.getElementById('fDesde').value;
-      const hasta = document.getElementById('fHasta').value;
       const sup = document.getElementById('fSupervisor').value;
       const estado = document.getElementById('fEstado').value;
-      const campoTexto = document.getElementById('fCampo').value.trim();
-
-      if (desde) q = q.gte('fecha_planificada', desde);
-      if (hasta) q = q.lte('fecha_planificada', hasta);
       if (sup) q = q.eq('supervisor_id', sup);
       if (estado) q = q.eq('estado', estado);
 
       const { data, error } = await q;
       if (error) {
-        msg.innerHTML = `<div class="msg msg-error">Error: ${error.message}</div>`;
-        return;
+        msg.innerHTML = `<div class="msg msg-error">Error cargando visitas: ${error.message}</div>`;
+        visitasMes = [];
+      } else {
+        visitasMes = data || [];
+      }
+      pintarCalendario();
+      pintarDetalle();
+    }
+
+    function visitasFiltradas() {
+      const t = document.getElementById('fCampo').value.trim().toLowerCase();
+      if (!t) return visitasMes;
+      return visitasMes.filter((v) =>
+        (v.campos?.nombre || '').toLowerCase().includes(t) || (v.campos?.cliente || '').toLowerCase().includes(t)
+      );
+    }
+
+    function pintarCalendario() {
+      const cont = document.getElementById('calendarioMes');
+      cont.innerHTML = '';
+
+      for (const n of ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom']) {
+        const h = document.createElement('div');
+        h.className = 'dia-semana';
+        h.textContent = n;
+        cont.appendChild(h);
       }
 
-      let filas = data || [];
-      if (campoTexto) {
-        const t = campoTexto.toLowerCase();
-        filas = filas.filter((v) => (v.campos?.nombre || '').toLowerCase().includes(t));
+      const year = mesActual.getFullYear();
+      const month = mesActual.getMonth();
+      const primerDia = new Date(year, month, 1);
+      const ultimoDia = new Date(year, month + 1, 0);
+      const offsetInicio = (primerDia.getDay() + 6) % 7; // lunes=0
+      const totalDias = ultimoDia.getDate();
+
+      const porDia = {};
+      for (const v of visitasFiltradas()) {
+        if (!porDia[v.fecha_planificada]) porDia[v.fecha_planificada] = [];
+        porDia[v.fecha_planificada].push(v);
       }
 
+      for (let i = offsetInicio; i > 0; i--) {
+        cont.appendChild(crearCeldaDia(new Date(year, month, 1 - i), true, []));
+      }
+      for (let dia = 1; dia <= totalDias; dia++) {
+        const d = new Date(year, month, dia);
+        cont.appendChild(crearCeldaDia(d, false, porDia[toISODate(d)] || []));
+      }
+      const totalCeldas = offsetInicio + totalDias;
+      const sobran = (7 - (totalCeldas % 7)) % 7;
+      for (let i = 1; i <= sobran; i++) {
+        cont.appendChild(crearCeldaDia(new Date(year, month + 1, i), true, []));
+      }
+    }
+
+    function crearCeldaDia(date, otroMes, visitasDia) {
+      const iso = toISODate(date);
+      const celda = document.createElement('div');
+      celda.className = 'dia-mes' + (otroMes ? ' otro-mes' : '') + (iso === diaSeleccionado ? ' seleccionado' : '');
+      celda.innerHTML = `<div class="num">${date.getDate()}</div>`;
+
+      const puntos = document.createElement('div');
+      puntos.className = 'puntos';
+      const maxPuntos = 8;
+      visitasDia.slice(0, maxPuntos).forEach((v) => {
+        const p = document.createElement('span');
+        p.className = 'punto ' + supervisorClase(v.profiles?.nombre_completo);
+        p.title = `${v.campos?.nombre || ''} · ${v.profiles?.nombre_completo || 'Sin asignar'}`;
+        puntos.appendChild(p);
+      });
+      celda.appendChild(puntos);
+      if (visitasDia.length > maxPuntos) {
+        const mas = document.createElement('div');
+        mas.className = 'mas';
+        mas.textContent = `+${visitasDia.length - maxPuntos}`;
+        celda.appendChild(mas);
+      }
+
+      celda.addEventListener('click', () => {
+        diaSeleccionado = iso;
+        pintarCalendario();
+        pintarDetalle();
+      });
+      return celda;
+    }
+
+    function pintarDetalle() {
+      const titulo = document.getElementById('tituloDia');
       const tbody = document.querySelector('#tabla tbody');
       tbody.innerHTML = '';
-      if (filas.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="7">No hay visitas con esos filtros.</td></tr>`;
+
+      if (!diaSeleccionado) {
+        titulo.textContent = 'Selecciona un día del calendario para ver el detalle.';
         return;
       }
-      for (const v of filas) {
+
+      const [y, m, d] = diaSeleccionado.split('-');
+      titulo.textContent = `Visitas del ${Number(d)}-${MESES_CORTOS[Number(m) - 1]}-${y}`;
+
+      const visitas = visitasFiltradas().filter((v) => v.fecha_planificada === diaSeleccionado);
+      if (visitas.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="6">No hay visitas ese día con los filtros actuales.</td></tr>`;
+        return;
+      }
+      for (const v of visitas) {
         const tr = document.createElement('tr');
         tr.innerHTML = `
-          <td>${v.fecha_planificada}</td>
-          <td>${v.fecha_realizada || '—'}</td>
-          <td>${escapeHtml(v.campos?.nombre || '')}</td>
+          <td><strong>${escapeHtml(v.campos?.nombre || '')}</strong></td>
           <td>${escapeHtml(v.campos?.zona || '')}</td>
           <td>${badgeSupervisor(v.profiles?.nombre_completo)}</td>
           <td><span class="estado-${v.estado}">${v.estado}</span></td>
+          <td>${v.fecha_realizada || '—'}</td>
           <td>${escapeHtml(v.notas || '')}</td>`;
         tbody.appendChild(tr);
       }
     }
+
+    await cargarMes();
   </script>
 </body>
 </html>
