@@ -49,17 +49,25 @@ export function diasHabiles(monday) {
 // profiles.nombre_completo trae el nombre completo (ej. "Jose Miguel Ortega"),
 // no solo el primer nombre.
 const SUP_CLASS = [
-  ['Jose Miguel', 'badge-josemiguel'],
-  ['Esteban', 'badge-esteban'],
-  ['Javier', 'badge-javier'],
-  ['Cesar', 'badge-cesar'],
+  ['Jose Miguel', 'josemiguel'],
+  ['Esteban', 'esteban'],
+  ['Javier', 'javier'],
+  ['Cesar', 'cesar'],
 ];
+
+// Devuelve el sufijo de color ('esteban', 'josemiguel', 'javier', 'cesar' o 'sin')
+// para un nombre completo. Se usa tanto para el badge como para chips/botones
+// del planificador, así el color de cada supervisor es siempre el mismo en toda la app.
+export function supervisorClase(nombre) {
+  if (!nombre) return 'sin';
+  const match = SUP_CLASS.find(([prefix]) => nombre.startsWith(prefix));
+  return match ? match[1] : 'sin';
+}
 
 export function badgeSupervisor(nombre) {
   if (!nombre) return `<span class="badge badge-sin">Sin asignar</span>`;
-  const match = SUP_CLASS.find(([prefix]) => nombre.startsWith(prefix));
-  const cls = match ? match[1] : 'badge-sin';
-  return `<span class="badge ${escapeHtml(cls)}">${escapeHtml(nombre)}</span>`;
+  const cls = supervisorClase(nombre);
+  return `<span class="badge badge-${cls}">${escapeHtml(nombre)}</span>`;
 }
 
 export function escapeHtml(s) {
