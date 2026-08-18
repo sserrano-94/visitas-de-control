@@ -208,7 +208,12 @@
             campoSpan.textContent = v.campos?.nombre || '';
             const subSpan = document.createElement('span');
             subSpan.className = 'chip-sub';
-            subSpan.textContent = v.campos?.comuna || v.campos?.zona || '';
+            subSpan.textContent = `${v.profiles?.nombre_completo || 'Sin asignar'} · ${v.campos?.comuna || v.campos?.zona || ''}`;
+
+            // Los selectores de supervisor/día quedan ocultos por defecto (chip
+            // "limpio", como antes); el lápiz los muestra/oculta para editar.
+            const editar = document.createElement('div');
+            editar.className = 'chip-editar';
 
             const selSupChip = document.createElement('select');
             selSupChip.className = 'chip-sup';
@@ -233,20 +238,40 @@
             selDiaChip.addEventListener('click', (e) => e.stopPropagation());
             selDiaChip.addEventListener('change', (e) => moverVisita(v.id, e.target.value));
 
+            editar.appendChild(selSupChip);
+            editar.appendChild(selDiaChip);
+
             info.appendChild(campoSpan);
-            info.appendChild(selSupChip);
-            info.appendChild(selDiaChip);
             info.appendChild(subSpan);
+            info.appendChild(editar);
+
+            const acciones = document.createElement('div');
+            acciones.className = 'chip-acciones';
+
+            const btnLapiz = document.createElement('button');
+            btnLapiz.type = 'button';
+            btnLapiz.className = 'chip-lapiz';
+            btnLapiz.title = 'Editar supervisor / día';
+            btnLapiz.textContent = '✏️';
+            btnLapiz.addEventListener('mousedown', (e) => e.stopPropagation());
+            btnLapiz.addEventListener('click', (e) => {
+              e.stopPropagation();
+              chip.classList.toggle('editando');
+            });
 
             const btnX = document.createElement('button');
             btnX.type = 'button';
             btnX.className = 'chip-x';
             btnX.title = 'Quitar';
             btnX.textContent = '×';
-            btnX.addEventListener('click', () => quitar(v.id));
+            btnX.addEventListener('mousedown', (e) => e.stopPropagation());
+            btnX.addEventListener('click', (e) => { e.stopPropagation(); quitar(v.id); });
+
+            acciones.appendChild(btnLapiz);
+            acciones.appendChild(btnX);
 
             chip.appendChild(info);
-            chip.appendChild(btnX);
+            chip.appendChild(acciones);
             col.appendChild(chip);
           }
         }
