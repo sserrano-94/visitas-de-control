@@ -363,3 +363,17 @@ td.col-meta input.inline-edit { width: 62px; }
 @media (max-width: 560px) {
   .calendario { grid-template-columns: 1fr; }
 }
+.chip select.chip-sup {
+  width: 100%;
+  padding: 2px 4px;
+  font-size: 0.72rem;
+  margin: 3px 0;
+  border: 1px solid rgba(255,255,255,0.55);
+  border-radius: 4px;
+  background: rgba(255,255,255,0.18);
+  color: white;
+}
+.chip select.chip-sup option { color: #111; }
+.chip { cursor: grab; }
+.chip.dragging { opacity: 0.35; }
+.calendario-dia.drop-target { outline: 2px dashed var(--primary); outline-offset: 2px; }
