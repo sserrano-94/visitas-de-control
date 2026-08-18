@@ -10,10 +10,29 @@
   <div class="topbar" id="topbar"></div>
   <main>
     <h1>Campos</h1>
-    <p class="subtitle">Agrega campos nuevos, edita zona/superficie/meta, o desactiva los que ya no se visitan.</p>
+    <p class="subtitle">Todos los campos, con su agrícola, zona, comuna y encargado. El supervisor y la meta mensual se cambian directo en la tabla.</p>
 
-    <div class="card">
-      <h2 style="margin-top:0;" id="formTitle">Agregar campo nuevo</h2>
+    <div id="msgGlobal"></div>
+
+    <button id="btnAbrirModal" class="btn-agregar">+ Agregar campo nuevo</button>
+
+    <div class="form-row" style="max-width:420px; margin-top:10px;">
+      <div><input type="text" id="buscar" placeholder="Buscar por campo, cliente, zona o comuna…" /></div>
+    </div>
+
+    <table id="tabla">
+      <thead>
+        <tr><th>Campo</th><th>Cliente / Agrícola</th><th>Zona</th><th>Comuna</th><th>Ha</th><th>Meta/mes</th><th>Supervisor habitual</th><th></th></tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </main>
+
+  <!-- Modal Agregar / Editar campo -->
+  <div class="modal-overlay" id="modalOverlay">
+    <div class="modal-box">
+      <button type="button" class="modal-close" id="btnCerrarModal" title="Cerrar">&times;</button>
+      <h2 id="formTitle">Agregar campo nuevo</h2>
       <div id="msg"></div>
       <form id="campoForm">
         <input type="hidden" id="campoId" />
@@ -23,19 +42,27 @@
             <input type="text" id="nombre" required />
           </div>
           <div>
-            <label for="cliente">Cliente</label>
+            <label for="cliente">Cliente / Agrícola</label>
             <input type="text" id="cliente" />
-          </div>
-          <div>
-            <label for="zona">Zona</label>
-            <input type="text" id="zona" />
           </div>
         </div>
         <div class="form-row">
           <div>
-            <label for="ubicacion">Ubicación / referencia</label>
-            <input type="text" id="ubicacion" />
+            <label for="zona">Zona</label>
+            <select id="zona">
+              <option value="">Sin definir</option>
+              <option>Zona Centro Norte</option>
+              <option>Zona Centro</option>
+              <option>Zona Centro Sur</option>
+              <option>Zona Sur</option>
+            </select>
           </div>
+          <div>
+            <label for="comuna">Comuna</label>
+            <input type="text" id="comuna" />
+          </div>
+        </div>
+        <div class="form-row">
           <div>
             <label for="superficie">Superficie (ha)</label>
             <input type="number" step="0.01" id="superficie" />
@@ -56,28 +83,17 @@
           </div>
         </div>
         <button type="submit" id="btnGuardar">Guardar campo</button>
-        <button type="button" id="btnCancelar" class="secondary" style="display:none;">Cancelar edición</button>
+        <button type="button" id="btnCancelar" class="secondary">Cancelar</button>
       </form>
     </div>
-
-    <h2>Campos activos</h2>
-    <div class="form-row" style="max-width:320px;">
-      <div><input type="text" id="buscar" placeholder="Buscar por nombre o zona…" /></div>
-    </div>
-    <table id="tabla">
-      <thead>
-        <tr><th>Campo</th><th>Zona</th><th>Cliente</th><th>Ha</th><th>Meta/mes</th><th>Supervisor habitual</th><th></th></tr>
-      </thead>
-      <tbody></tbody>
-    </table>
-  </main>
+  </div>
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script type="module">
     import { sb } from '../js/supabaseClient.js';
     import { requireAdmin } from '../js/auth.js';
     import { renderTopbar } from '../js/nav.js';
-    import { badgeSupervisor, escapeHtml } from '../js/helpers.js';
+    import { escapeHtml } from '../js/helpers.js';
 
     const profile = await requireAdmin('../mi-semana.html', '../login.html');
     if (!profile) throw new Error('no-admin');
@@ -100,14 +116,23 @@
       }
     }
 
+    function opcionesSupervisorHTML(seleccionadoId) {
+      let html = '<option value="">Sin definir</option>';
+      for (const s of supervisores) {
+        html += `<option value="${s.id}" ${s.id === seleccionadoId ? 'selected' : ''}>${escapeHtml(s.nombre_completo)}</option>`;
+      }
+      return html;
+    }
+
     async function cargarCampos() {
       const { data, error } = await sb
         .from('campos')
-        .select('id, nombre, zona, cliente, superficie_ha, meta_mensual, notas, supervisor_habitual_id, profiles(nombre_completo)')
+        .select('id, nombre, zona, comuna, cliente, superficie_ha, meta_mensual, notas, supervisor_habitual_id, activo, profiles(nombre_completo)')
         .eq('activo', true)
         .order('zona')
+        .order('comuna')
         .order('nombre');
-      const msg = document.getElementById('msg');
+      const msg = document.getElementById('msgGlobal');
       if (error) {
         msg.innerHTML = `<div class="msg msg-error">Error cargando campos: ${error.message}</div>`;
         return;
@@ -121,23 +146,48 @@
       const tbody = document.querySelector('#tabla tbody');
       tbody.innerHTML = '';
       const filas = campos.filter((c) =>
-        !filtro || c.nombre.toLowerCase().includes(filtro) || (c.zona || '').toLowerCase().includes(filtro)
+        !filtro ||
+        c.nombre.toLowerCase().includes(filtro) ||
+        (c.zona || '').toLowerCase().includes(filtro) ||
+        (c.comuna || '').toLowerCase().includes(filtro) ||
+        (c.cliente || '').toLowerCase().includes(filtro)
       );
       if (filas.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="7">Sin resultados.</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="8">Sin resultados.</td></tr>`;
         return;
       }
       for (const c of filas) {
         const tr = document.createElement('tr');
         tr.innerHTML = `
           <td><strong>${escapeHtml(c.nombre)}</strong></td>
-          <td>${escapeHtml(c.zona || '')}</td>
           <td>${escapeHtml(c.cliente || '')}</td>
+          <td>${escapeHtml(c.zona || '')}</td>
+          <td>${escapeHtml(c.comuna || '')}</td>
           <td>${c.superficie_ha ?? ''}</td>
-          <td>${c.meta_mensual}</td>
-          <td>${badgeSupervisor(c.profiles?.nombre_completo)}</td>
+          <td class="col-meta"></td>
+          <td></td>
           <td></td>`;
-        const tdAcciones = tr.lastElementChild;
+
+        // Meta mensual editable inline
+        const tdMeta = tr.children[5];
+        const inputMeta = document.createElement('input');
+        inputMeta.type = 'number';
+        inputMeta.step = '0.5';
+        inputMeta.className = 'inline-edit';
+        inputMeta.value = c.meta_mensual ?? 1;
+        inputMeta.addEventListener('change', () => guardarRapido(c.id, { meta_mensual: inputMeta.value }, inputMeta));
+        tdMeta.appendChild(inputMeta);
+
+        // Supervisor habitual editable inline
+        const tdSup = tr.children[6];
+        const selSup = document.createElement('select');
+        selSup.className = 'inline-edit';
+        selSup.innerHTML = opcionesSupervisorHTML(c.supervisor_habitual_id);
+        selSup.addEventListener('change', () => guardarRapido(c.id, { supervisor_habitual_id: selSup.value || null }, selSup));
+        tdSup.appendChild(selSup);
+
+        // Acciones
+        const tdAcciones = tr.children[7];
         const btnEditar = document.createElement('button');
         btnEditar.className = 'small';
         btnEditar.textContent = 'Editar';
@@ -149,11 +199,44 @@
         btnDesactivar.addEventListener('click', () => desactivar(c.id));
         tdAcciones.appendChild(btnEditar);
         tdAcciones.appendChild(btnDesactivar);
+
         tbody.appendChild(tr);
       }
     }
 
+    async function guardarRapido(id, payload, el) {
+      el.disabled = true;
+      const { error } = await sb.from('campos').update(payload).eq('id', id);
+      el.disabled = false;
+      if (error) {
+        alert('No se pudo guardar: ' + error.message);
+        return;
+      }
+      const c = campos.find((x) => x.id === id);
+      if (c) Object.assign(c, payload);
+      el.style.outline = '2px solid var(--ok)';
+      setTimeout(() => { el.style.outline = ''; }, 700);
+    }
+
     document.getElementById('buscar').addEventListener('input', pintarTabla);
+
+    // ---- Modal ----
+    const modalOverlay = document.getElementById('modalOverlay');
+
+    function abrirModal() {
+      modalOverlay.classList.add('abierto');
+    }
+    function cerrarModal() {
+      modalOverlay.classList.remove('abierto');
+      limpiarForm();
+    }
+    document.getElementById('btnAbrirModal').addEventListener('click', () => {
+      limpiarForm();
+      abrirModal();
+    });
+    document.getElementById('btnCerrarModal').addEventListener('click', cerrarModal);
+    document.getElementById('btnCancelar').addEventListener('click', cerrarModal);
+    modalOverlay.addEventListener('click', (e) => { if (e.target === modalOverlay) cerrarModal(); });
 
     function editar(c) {
       document.getElementById('formTitle').textContent = `Editando: ${c.nombre}`;
@@ -161,24 +244,21 @@
       document.getElementById('nombre').value = c.nombre || '';
       document.getElementById('cliente').value = c.cliente || '';
       document.getElementById('zona').value = c.zona || '';
-      document.getElementById('ubicacion').value = c.ubicacion || '';
+      document.getElementById('comuna').value = c.comuna || '';
       document.getElementById('superficie').value = c.superficie_ha ?? '';
       document.getElementById('meta').value = c.meta_mensual ?? 1;
       document.getElementById('supervisor').value = c.supervisor_habitual_id || '';
       document.getElementById('notas').value = c.notas || '';
       document.getElementById('btnGuardar').textContent = 'Guardar cambios';
-      document.getElementById('btnCancelar').style.display = 'inline-block';
-      window.scrollTo({ top: 0, behavior: 'smooth' });
+      abrirModal();
     }
-
-    document.getElementById('btnCancelar').addEventListener('click', limpiarForm);
 
     function limpiarForm() {
       document.getElementById('formTitle').textContent = 'Agregar campo nuevo';
       document.getElementById('campoForm').reset();
       document.getElementById('campoId').value = '';
       document.getElementById('btnGuardar').textContent = 'Guardar campo';
-      document.getElementById('btnCancelar').style.display = 'none';
+      document.getElementById('msg').innerHTML = '';
     }
 
     async function desactivar(id) {
@@ -195,8 +275,8 @@
       const payload = {
         nombre: document.getElementById('nombre').value.trim(),
         cliente: document.getElementById('cliente').value.trim() || null,
-        zona: document.getElementById('zona').value.trim() || null,
-        ubicacion: document.getElementById('ubicacion').value.trim() || null,
+        zona: document.getElementById('zona').value || null,
+        comuna: document.getElementById('comuna').value.trim() || null,
         superficie_ha: document.getElementById('superficie').value || null,
         meta_mensual: document.getElementById('meta').value,
         supervisor_habitual_id: document.getElementById('supervisor').value || null,
@@ -213,8 +293,7 @@
         msg.innerHTML = `<div class="msg msg-error">No se pudo guardar: ${error.message}</div>`;
         return;
       }
-      msg.innerHTML = `<div class="msg msg-ok">Guardado.</div>`;
-      limpiarForm();
+      cerrarModal();
       cargarCampos();
     });
 
