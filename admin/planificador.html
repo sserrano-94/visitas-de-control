@@ -10,7 +10,7 @@
   <div class="topbar" id="topbar"></div>
   <main>
     <h1>Planificador semanal</h1>
-    <p class="subtitle">Elige a qué campos va cada supervisor esta semana. Los campos sin ninguna visita este mes aparecen marcados como <span class="tag-atrasado">atrasado</span> y se muestran primero dentro de su zona.</p>
+    <p class="subtitle">Arma la semana de cada supervisor. Filtra por supervisor para ver (y poder capturar/enviar) solo su semana.</p>
 
     <div class="week-nav">
       <button class="secondary" id="prevWeek">← Semana anterior</button>
@@ -20,13 +20,13 @@
 
     <div id="msg"></div>
 
-    <h2>Ya planificado para esta semana</h2>
-    <table id="tablaPlan">
-      <thead><tr><th>Día</th><th>Campo</th><th>Zona</th><th>Comuna</th><th>Supervisor</th><th>Estado</th><th></th></tr></thead>
-      <tbody></tbody>
-    </table>
+    <div class="filtro-sup-row" id="filtroSupRow"></div>
+    <div class="stats-semana" id="statsSemana"></div>
+
+    <div class="calendario" id="calendario"></div>
 
     <h2>Agregar visitas a la semana</h2>
+    <p class="subtitle" id="hintCandidatos">Los campos sin ninguna visita este mes aparecen marcados como <span class="tag-atrasado">atrasado</span>.</p>
     <div class="form-row" style="max-width:320px;">
       <div><input type="text" id="buscar" placeholder="Buscar por campo, zona o comuna…" /></div>
     </div>
@@ -49,7 +49,7 @@
     import { sb } from '../js/supabaseClient.js';
     import { requireAdmin } from '../js/auth.js';
     import { renderTopbar } from '../js/nav.js';
-    import { mondayOf, addDays, diasHabiles, nombreDia, fechaCorta, toISODate, rangoSemanaTexto, badgeSupervisor, escapeHtml } from '../js/helpers.js';
+    import { mondayOf, addDays, diasHabiles, nombreDia, fechaCorta, toISODate, rangoSemanaTexto, supervisorClase, escapeHtml } from '../js/helpers.js';
 
     const profile = await requireAdmin('../mi-semana.html', '../login.html');
     if (!profile) throw new Error('no-admin');
@@ -62,6 +62,7 @@
     let campos = [];
     let hechoPorCampo = {}; // campo_id -> n visitas completadas este mes calendario
     let planSemana = [];    // visitas ya existentes para la semana elegida
+    let filtroSupervisorId = null; // null = "Todos"
 
     document.getElementById('prevWeek').addEventListener('click', () => { monday = addDays(monday, -7); cargarTodo(); });
     document.getElementById('nextWeek').addEventListener('click', () => { monday = addDays(monday, 7); cargarTodo(); });
@@ -69,9 +70,39 @@
     document.getElementById('btnGuardarSeleccion').addEventListener('click', guardarSeleccion);
 
     async function cargarSupervisores() {
-      const { data, error } = await sb.from('profiles').select('id, nombre_completo').eq('activo', true).order('nombre_completo');
+      const { data, error } = await sb.from('profiles').select('id, nombre_completo').eq('activo', true).eq('rol', 'supervisor').order('nombre_completo');
       if (error) { console.error(error); return; }
       supervisores = data || [];
+      pintarFiltroSupervisores();
+    }
+
+    function pintarFiltroSupervisores() {
+      const cont = document.getElementById('filtroSupRow');
+      cont.innerHTML = '';
+      const btnTodos = document.createElement('button');
+      btnTodos.type = 'button';
+      btnTodos.className = 'filtro-sup' + (filtroSupervisorId === null ? ' activo' : '');
+      btnTodos.style.background = '#374151';
+      btnTodos.textContent = 'Todos';
+      btnTodos.addEventListener('click', () => { filtroSupervisorId = null; refrescarVista(); });
+      cont.appendChild(btnTodos);
+
+      for (const s of supervisores) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        const cls = supervisorClase(s.nombre_completo);
+        btn.className = 'filtro-sup ' + cls + (filtroSupervisorId === s.id ? ' activo' : '');
+        btn.textContent = s.nombre_completo;
+        btn.addEventListener('click', () => { filtroSupervisorId = s.id; refrescarVista(); });
+        cont.appendChild(btn);
+      }
+    }
+
+    function refrescarVista() {
+      pintarFiltroSupervisores();
+      pintarStats();
+      pintarCalendario();
+      pintarTablaCampos();
     }
 
     async function cargarCampos() {
@@ -107,39 +138,64 @@
       const friday = addDays(monday, 4);
       const { data, error } = await sb
         .from('visitas')
-        .select('id, fecha_planificada, estado, campo_id, campos(nombre, zona, comuna), profiles!visitas_supervisor_id_fkey(nombre_completo)')
+        .select('id, fecha_planificada, estado, campo_id, supervisor_id, campos(nombre, zona, comuna), profiles!visitas_supervisor_id_fkey(id, nombre_completo)')
         .gte('fecha_planificada', toISODate(monday))
         .lte('fecha_planificada', toISODate(friday))
+        .neq('estado', 'cancelada')
         .order('fecha_planificada');
       if (error) { console.error(error); planSemana = []; return; }
       planSemana = data || [];
     }
 
-    function pintarPlanSemana() {
-      const tbody = document.querySelector('#tablaPlan tbody');
-      tbody.innerHTML = '';
-      if (planSemana.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="7">Todavía no hay nada planificado para esta semana.</td></tr>`;
-        return;
+    function pintarStats() {
+      const cont = document.getElementById('statsSemana');
+      cont.innerHTML = '';
+      for (const s of supervisores) {
+        const n = planSemana.filter((v) => v.supervisor_id === s.id).length;
+        if (n === 0 && filtroSupervisorId !== null && filtroSupervisorId !== s.id) continue; // no saturar con ceros ajenos al filtro
+        const cls = supervisorClase(s.nombre_completo);
+        const div = document.createElement('div');
+        div.className = 'stat-sup ' + cls;
+        div.innerHTML = `<div class="n">${n}</div><div class="lbl">${escapeHtml(s.nombre_completo)} esta semana</div>`;
+        cont.appendChild(div);
       }
-      for (const v of planSemana) {
-        const tr = document.createElement('tr');
-        tr.innerHTML = `
-          <td>${v.fecha_planificada}</td>
-          <td>${escapeHtml(v.campos?.nombre || '')}</td>
-          <td>${escapeHtml(v.campos?.zona || '')}</td>
-          <td>${escapeHtml(v.campos?.comuna || '')}</td>
-          <td>${badgeSupervisor(v.profiles?.nombre_completo)}</td>
-          <td><span class="estado-${v.estado}">${v.estado}</span></td>
-          <td></td>`;
-        if (v.estado === 'planificada') {
-          const btn = document.createElement('button');
-          btn.className = 'small secondary';
-          btn.textContent = 'Quitar';
-          btn.addEventListener('click', () => quitar(v.id));
-          tr.lastElementChild.appendChild(btn);
+    }
+
+    function pintarCalendario() {
+      const cont = document.getElementById('calendario');
+      cont.innerHTML = '';
+      const dias = diasHabiles(monday);
+      for (const dia of dias) {
+        const iso = toISODate(dia);
+        const visitasDia = planSemana.filter((v) =>
+          v.fecha_planificada === iso && (filtroSupervisorId === null || v.supervisor_id === filtroSupervisorId)
+        );
+        const col = document.createElement('div');
+        col.className = 'calendario-dia';
+        col.innerHTML = `<h3>${nombreDia(dia)}</h3><div class="fecha">${fechaCorta(dia)}</div>`;
+        if (visitasDia.length === 0) {
+          col.innerHTML += `<div class="chip-vacio">Sin visitas</div>`;
+        } else {
+          for (const v of visitasDia) {
+            const cls = supervisorClase(v.profiles?.nombre_completo);
+            const chip = document.createElement('div');
+            chip.className = 'chip ' + cls;
+            chip.innerHTML = `
+              <div class="chip-info">
+                <span class="chip-campo">${escapeHtml(v.campos?.nombre || '')}</span>
+                <span class="chip-sub">${escapeHtml(v.profiles?.nombre_completo || '')} · ${escapeHtml(v.campos?.comuna || v.campos?.zona || '')}</span>
+              </div>`;
+            const btnX = document.createElement('button');
+            btnX.type = 'button';
+            btnX.className = 'chip-x';
+            btnX.title = 'Quitar';
+            btnX.textContent = '×';
+            btnX.addEventListener('click', () => quitar(v.id));
+            chip.appendChild(btnX);
+            col.appendChild(chip);
+          }
         }
-        tbody.appendChild(tr);
+        cont.appendChild(col);
       }
     }
 
@@ -148,24 +204,32 @@
       const { error } = await sb.from('visitas').delete().eq('id', id);
       if (error) { alert('Error: ' + error.message); return; }
       await cargarPlanSemana();
-      pintarPlanSemana();
+      pintarStats();
+      pintarCalendario();
+      pintarTablaCampos();
     }
 
     function pintarTablaCampos() {
       const filtro = document.getElementById('buscar').value.trim().toLowerCase();
       const dias = diasHabiles(monday);
-      const yaPlanificados = new Set(planSemana.filter(v => v.estado !== 'cancelada').map(v => v.campo_id));
+      const yaPlanificados = new Set(planSemana.map((v) => v.campo_id));
 
       let filas = campos.filter((c) =>
         !filtro || c.nombre.toLowerCase().includes(filtro) || (c.zona || '').toLowerCase().includes(filtro) || (c.comuna || '').toLowerCase().includes(filtro)
       );
 
-      // Orden: primero atrasados (0 hecho este mes), luego por pendiente descendente, agrupado por zona.
       filas = filas.map((c) => {
         const hecho = hechoPorCampo[c.id] || 0;
         const pendiente = (c.meta_mensual || 0) - hecho;
         return { ...c, hecho, pendiente, atrasado: hecho === 0 && (c.meta_mensual || 0) > 0 };
       }).sort((a, b) => {
+        // Si hay un supervisor filtrado, sus campos habituales aparecen primero
+        // (son las "alternativas" más obvias para asignarle), sin ocultar el resto.
+        if (filtroSupervisorId !== null) {
+          const aEsSuyo = a.supervisor_habitual_id === filtroSupervisorId;
+          const bEsSuyo = b.supervisor_habitual_id === filtroSupervisorId;
+          if (aEsSuyo !== bEsSuyo) return aEsSuyo ? -1 : 1;
+        }
         if ((a.zona || '') !== (b.zona || '')) return (a.zona || '').localeCompare(b.zona || '');
         if ((a.comuna || '') !== (b.comuna || '')) return (a.comuna || '').localeCompare(b.comuna || '');
         if (a.atrasado !== b.atrasado) return a.atrasado ? -1 : 1;
@@ -188,11 +252,15 @@
           <td></td>
           <td></td>`;
 
+        // Supervisor por defecto: si hay un filtro activo, se prioriza ese supervisor
+        // (para asignar rápido); si no, el supervisor habitual del campo.
+        const supervisorPorDefecto = filtroSupervisorId !== null ? filtroSupervisorId : c.supervisor_habitual_id;
+
         const tdSup = tr.children[7];
         const selSup = document.createElement('select');
         selSup.className = 'selSup';
         selSup.innerHTML = '<option value="">Elegir…</option>' + supervisores.map(s =>
-          `<option value="${s.id}" ${s.id === c.supervisor_habitual_id ? 'selected' : ''}>${escapeHtml(s.nombre_completo)}</option>`
+          `<option value="${s.id}" ${s.id === supervisorPorDefecto ? 'selected' : ''}>${escapeHtml(s.nombre_completo)}</option>`
         ).join('');
         tdSup.appendChild(selSup);
 
@@ -237,7 +305,8 @@
       }
       msg.innerHTML = `<div class="msg msg-ok">Se agregaron ${filas.length} visita(s) a la semana.</div>`;
       await cargarPlanSemana();
-      pintarPlanSemana();
+      pintarStats();
+      pintarCalendario();
       pintarTablaCampos();
     }
 
@@ -245,7 +314,8 @@
       document.getElementById('weekLabel').textContent = rangoSemanaTexto(monday);
       document.getElementById('msg').innerHTML = '';
       await Promise.all([cargarCampos(), cargarHechoEsteMes(), cargarPlanSemana()]);
-      pintarPlanSemana();
+      pintarStats();
+      pintarCalendario();
       pintarTablaCampos();
     }
 
