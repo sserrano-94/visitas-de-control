@@ -45,17 +45,21 @@ export function diasHabiles(monday) {
   return [0, 1, 2, 3, 4].map((n) => addDays(monday, n));
 }
 
-const SUP_CLASS = {
-  Esteban: 'badge-esteban',
-  'Jose Miguel': 'badge-josemiguel',
-  Javier: 'badge-javier',
-  Cesar: 'badge-cesar',
-};
+// Ordenado de más específico a menos, y comparado con "empieza con" porque
+// profiles.nombre_completo trae el nombre completo (ej. "Jose Miguel Ortega"),
+// no solo el primer nombre.
+const SUP_CLASS = [
+  ['Jose Miguel', 'badge-josemiguel'],
+  ['Esteban', 'badge-esteban'],
+  ['Javier', 'badge-javier'],
+  ['Cesar', 'badge-cesar'],
+];
 
 export function badgeSupervisor(nombre) {
   if (!nombre) return `<span class="badge badge-sin">Sin asignar</span>`;
-  const cls = SUP_CLASS[nombre] || 'badge-sin';
-  return `<span class="badge ${cls}">${nombre}</span>`;
+  const match = SUP_CLASS.find(([prefix]) => nombre.startsWith(prefix));
+  const cls = match ? match[1] : 'badge-sin';
+  return `<span class="badge ${escapeHtml(cls)}">${escapeHtml(nombre)}</span>`;
 }
 
 export function escapeHtml(s) {
