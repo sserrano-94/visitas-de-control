@@ -22,18 +22,18 @@
 
     <h2>Ya planificado para esta semana</h2>
     <table id="tablaPlan">
-      <thead><tr><th>Día</th><th>Campo</th><th>Zona</th><th>Supervisor</th><th>Estado</th><th></th></tr></thead>
+      <thead><tr><th>Día</th><th>Campo</th><th>Zona</th><th>Comuna</th><th>Supervisor</th><th>Estado</th><th></th></tr></thead>
       <tbody></tbody>
     </table>
 
     <h2>Agregar visitas a la semana</h2>
     <div class="form-row" style="max-width:320px;">
-      <div><input type="text" id="buscar" placeholder="Buscar por campo o zona…" /></div>
+      <div><input type="text" id="buscar" placeholder="Buscar por campo, zona o comuna…" /></div>
     </div>
     <table id="tablaCampos">
       <thead>
         <tr>
-          <th></th><th>Campo</th><th>Zona</th><th>Meta/mes</th><th>Hecho este mes</th><th>Pendiente</th>
+          <th></th><th>Campo</th><th>Zona</th><th>Comuna</th><th>Meta/mes</th><th>Hecho este mes</th><th>Pendiente</th>
           <th>Supervisor</th><th>Día</th>
         </tr>
       </thead>
@@ -77,9 +77,10 @@
     async function cargarCampos() {
       const { data, error } = await sb
         .from('campos')
-        .select('id, nombre, zona, meta_mensual, supervisor_habitual_id, profiles(nombre_completo)')
+        .select('id, nombre, zona, comuna, meta_mensual, supervisor_habitual_id, profiles(nombre_completo)')
         .eq('activo', true)
         .order('zona')
+        .order('comuna')
         .order('nombre');
       if (error) { console.error(error); return; }
       campos = data || [];
@@ -106,7 +107,7 @@
       const friday = addDays(monday, 4);
       const { data, error } = await sb
         .from('visitas')
-        .select('id, fecha_planificada, estado, campos(nombre, zona), profiles!visitas_supervisor_id_fkey(nombre_completo)')
+        .select('id, fecha_planificada, estado, campo_id, campos(nombre, zona, comuna), profiles!visitas_supervisor_id_fkey(nombre_completo)')
         .gte('fecha_planificada', toISODate(monday))
         .lte('fecha_planificada', toISODate(friday))
         .order('fecha_planificada');
@@ -118,7 +119,7 @@
       const tbody = document.querySelector('#tablaPlan tbody');
       tbody.innerHTML = '';
       if (planSemana.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="6">Todavía no hay nada planificado para esta semana.</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="7">Todavía no hay nada planificado para esta semana.</td></tr>`;
         return;
       }
       for (const v of planSemana) {
@@ -127,6 +128,7 @@
           <td>${v.fecha_planificada}</td>
           <td>${escapeHtml(v.campos?.nombre || '')}</td>
           <td>${escapeHtml(v.campos?.zona || '')}</td>
+          <td>${escapeHtml(v.campos?.comuna || '')}</td>
           <td>${badgeSupervisor(v.profiles?.nombre_completo)}</td>
           <td><span class="estado-${v.estado}">${v.estado}</span></td>
           <td></td>`;
@@ -152,10 +154,10 @@
     function pintarTablaCampos() {
       const filtro = document.getElementById('buscar').value.trim().toLowerCase();
       const dias = diasHabiles(monday);
-      const yaPlanificados = new Set(planSemana.filter(v => v.estado !== 'cancelada').map(v => v.campos?.nombre));
+      const yaPlanificados = new Set(planSemana.filter(v => v.estado !== 'cancelada').map(v => v.campo_id));
 
       let filas = campos.filter((c) =>
-        !filtro || c.nombre.toLowerCase().includes(filtro) || (c.zona || '').toLowerCase().includes(filtro)
+        !filtro || c.nombre.toLowerCase().includes(filtro) || (c.zona || '').toLowerCase().includes(filtro) || (c.comuna || '').toLowerCase().includes(filtro)
       );
 
       // Orden: primero atrasados (0 hecho este mes), luego por pendiente descendente, agrupado por zona.
@@ -165,6 +167,7 @@
         return { ...c, hecho, pendiente, atrasado: hecho === 0 && (c.meta_mensual || 0) > 0 };
       }).sort((a, b) => {
         if ((a.zona || '') !== (b.zona || '')) return (a.zona || '').localeCompare(b.zona || '');
+        if ((a.comuna || '') !== (b.comuna || '')) return (a.comuna || '').localeCompare(b.comuna || '');
         if (a.atrasado !== b.atrasado) return a.atrasado ? -1 : 1;
         return b.pendiente - a.pendiente;
       });
@@ -173,18 +176,19 @@
       tbody.innerHTML = '';
       for (const c of filas) {
         const tr = document.createElement('tr');
-        const yaEsta = yaPlanificados.has(c.nombre);
+        const yaEsta = yaPlanificados.has(c.id);
         tr.innerHTML = `
           <td><input type="checkbox" class="chkCampo" data-id="${c.id}" ${yaEsta ? 'disabled' : ''}/></td>
           <td><strong>${escapeHtml(c.nombre)}</strong>${c.atrasado ? ' <span class="tag-atrasado">atrasado</span>' : ''}${yaEsta ? ' <span class="subtitle" style="font-size:0.78rem;">(ya planificado)</span>' : ''}</td>
           <td>${escapeHtml(c.zona || '')}</td>
+          <td>${escapeHtml(c.comuna || '')}</td>
           <td>${c.meta_mensual}</td>
           <td>${c.hecho}</td>
           <td>${c.pendiente > 0 ? c.pendiente : 0}</td>
           <td></td>
           <td></td>`;
 
-        const tdSup = tr.children[6];
+        const tdSup = tr.children[7];
         const selSup = document.createElement('select');
         selSup.className = 'selSup';
         selSup.innerHTML = '<option value="">Elegir…</option>' + supervisores.map(s =>
@@ -192,7 +196,7 @@
         ).join('');
         tdSup.appendChild(selSup);
 
-        const tdDia = tr.children[7];
+        const tdDia = tr.children[8];
         const selDia = document.createElement('select');
         selDia.className = 'selDia';
         selDia.innerHTML = dias.map(d => `<option value="${toISODate(d)}">${nombreDia(d)} ${fechaCorta(d)}</option>`).join('');
