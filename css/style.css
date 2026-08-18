@@ -374,3 +374,48 @@ td.col-meta input.inline-edit { width: 62px; }
 }
 .chip button.chip-lapiz { font-size: 0.62rem; }
 .chip button.chip-x:hover, .chip button.chip-lapiz:hover { background: rgba(255,255,255,0.45); }
+/* ---- Historial: calendario mensual con puntos de colores por supervisor ---- */
+.calendario-mes {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 6px;
+  margin-bottom: 18px;
+}
+.calendario-mes .dia-semana {
+  text-align: center;
+  font-size: 0.78rem;
+  font-weight: bold;
+  color: var(--muted);
+  padding-bottom: 2px;
+}
+.dia-mes {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px;
+  min-height: 66px;
+  cursor: pointer;
+}
+.dia-mes:hover { border-color: var(--primary); }
+.dia-mes.otro-mes { opacity: 0.35; }
+.dia-mes.seleccionado { border-color: var(--primary); border-width: 2px; background: #eaf1fb; }
+.dia-mes .num { font-size: 0.82rem; font-weight: 600; margin-bottom: 4px; }
+.dia-mes .puntos { display: flex; flex-wrap: wrap; gap: 3px; }
+.dia-mes .mas { font-size: 0.68rem; color: var(--muted); margin-top: 2px; }
+.punto {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  display: inline-block;
+  background: #6b7280;
+}
+.punto.esteban { background: var(--azul); }
+.punto.josemiguel { background: var(--verde); }
+.punto.javier { background: var(--cafe); }
+.punto.cesar { background: var(--gris); }
+
+@media (max-width: 700px) {
+  .calendario-mes { gap: 3px; }
+  .dia-mes { min-height: 48px; padding: 4px; }
+  .dia-mes .num { font-size: 0.72rem; }
+}
