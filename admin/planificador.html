@@ -33,7 +33,7 @@
     <table id="tablaCampos">
       <thead>
         <tr>
-          <th></th><th>Campo</th><th>Zona</th><th>Comuna</th><th>Meta/mes</th><th>Hecho este mes</th><th>Pendiente</th>
+          <th></th><th>Campo</th><th>Agrícola</th><th>Zona</th><th>Comuna</th><th>Meta/mes</th><th>Hecho este mes</th><th>Pendiente</th>
           <th>Supervisor</th><th>Día</th>
         </tr>
       </thead>
@@ -193,7 +193,7 @@
             const chip = document.createElement('div');
             chip.className = 'chip ' + cls;
             chip.draggable = true;
-            chip.title = 'Arrastra para mover de día';
+            chip.title = 'Puedes arrastrarlo a otro día, o usar el selector de día de abajo';
             chip.addEventListener('dragstart', (e) => {
               e.dataTransfer.setData('text/plain', v.id);
               e.dataTransfer.effectAllowed = 'move';
@@ -220,8 +220,22 @@
             selSupChip.addEventListener('click', (e) => e.stopPropagation());
             selSupChip.addEventListener('change', (e) => cambiarSupervisorChip(v.id, e.target.value));
 
+            // Selector de día: forma segura de mover la visita (el arrastre con el
+            // mouse no es confiable en todos los navegadores/touchpads, este selector
+            // siempre funciona igual).
+            const selDiaChip = document.createElement('select');
+            selDiaChip.className = 'chip-dia';
+            selDiaChip.innerHTML = dias.map((d) => {
+              const diaIso = toISODate(d);
+              return `<option value="${diaIso}" ${diaIso === iso ? 'selected' : ''}>${nombreDia(d)}</option>`;
+            }).join('');
+            selDiaChip.addEventListener('mousedown', (e) => e.stopPropagation());
+            selDiaChip.addEventListener('click', (e) => e.stopPropagation());
+            selDiaChip.addEventListener('change', (e) => moverVisita(v.id, e.target.value));
+
             info.appendChild(campoSpan);
             info.appendChild(selSupChip);
+            info.appendChild(selDiaChip);
             info.appendChild(subSpan);
 
             const btnX = document.createElement('button');
@@ -276,7 +290,14 @@
     function pintarTablaCampos() {
       const filtro = document.getElementById('buscar').value.trim().toLowerCase();
       const dias = diasHabiles(monday);
-      const yaPlanificados = new Set(planSemana.map((v) => v.campo_id));
+
+      // Días ya usados por cada campo esta semana (puede tener más de uno:
+      // hay campos que se visitan 2 veces en la semana).
+      const diasPorCampo = {};
+      for (const v of planSemana) {
+        if (!diasPorCampo[v.campo_id]) diasPorCampo[v.campo_id] = new Set();
+        diasPorCampo[v.campo_id].add(v.fecha_planificada);
+      }
 
       let filas = campos.filter((c) =>
         !filtro
@@ -308,10 +329,17 @@
       tbody.innerHTML = '';
       for (const c of filas) {
         const tr = document.createElement('tr');
-        const yaEsta = yaPlanificados.has(c.id);
+        const diasUsados = diasPorCampo[c.id] || new Set();
+        const yaEsta = diasUsados.size > 0;
+        const nombresDiasUsados = dias
+          .filter((d) => diasUsados.has(toISODate(d)))
+          .map((d) => nombreDia(d).slice(0, 3))
+          .join(', ');
+
         tr.innerHTML = `
-          <td><input type="checkbox" class="chkCampo" data-id="${c.id}" ${yaEsta ? 'disabled' : ''}/></td>
-          <td><strong>${escapeHtml(c.nombre)}</strong>${c.atrasado ? ' <span class="tag-atrasado">atrasado</span>' : ''}${yaEsta ? ' <span class="subtitle" style="font-size:0.78rem;">(ya planificado)</span>' : ''}</td>
+          <td><input type="checkbox" class="chkCampo" data-id="${c.id}" /></td>
+          <td><strong>${escapeHtml(c.nombre)}</strong>${c.atrasado ? ' <span class="tag-atrasado">atrasado</span>' : ''}${yaEsta ? ` <span class="subtitle" style="font-size:0.78rem;">(ya: ${nombresDiasUsados})</span>` : ''}</td>
+          <td>${escapeHtml(c.cliente || '')}</td>
           <td>${escapeHtml(c.zona || '')}</td>
           <td>${escapeHtml(c.comuna || '')}</td>
           <td>${c.meta_mensual}</td>
@@ -324,7 +352,7 @@
         // (para asignar rápido); si no, el supervisor habitual del campo.
         const supervisorPorDefecto = filtroSupervisorId !== null ? filtroSupervisorId : c.supervisor_habitual_id;
 
-        const tdSup = tr.children[7];
+        const tdSup = tr.children[8];
         const selSup = document.createElement('select');
         selSup.className = 'selSup';
         selSup.innerHTML = '<option value="">Elegir…</option>' + supervisores.map(s =>
@@ -332,10 +360,19 @@
         ).join('');
         tdSup.appendChild(selSup);
 
-        const tdDia = tr.children[8];
+        // El campo puede volver a agregarse en otro día distinto (hay campos que se
+        // visitan 2 veces en la semana); solo bloqueamos repetir el MISMO día ya usado,
+        // y solo si queda al menos otro día libre para elegir.
+        const tdDia = tr.children[9];
         const selDia = document.createElement('select');
         selDia.className = 'selDia';
-        selDia.innerHTML = dias.map(d => `<option value="${toISODate(d)}">${nombreDia(d)} ${fechaCorta(d)}</option>`).join('');
+        selDia.innerHTML = dias.map((d) => {
+          const diaIso = toISODate(d);
+          const bloquear = diasUsados.has(diaIso) && diasUsados.size < dias.length;
+          return `<option value="${diaIso}" ${bloquear ? 'disabled' : ''}>${nombreDia(d)} ${fechaCorta(d)}</option>`;
+        }).join('');
+        const primeraOpcionLibre = selDia.querySelector('option:not([disabled])');
+        if (primeraOpcionLibre) primeraOpcionLibre.selected = true;
         tdDia.appendChild(selDia);
 
         tbody.appendChild(tr);
