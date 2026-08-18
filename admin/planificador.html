@@ -28,7 +28,7 @@
     <h2>Agregar visitas a la semana</h2>
     <p class="subtitle" id="hintCandidatos">Los campos sin ninguna visita este mes aparecen marcados como <span class="tag-atrasado">atrasado</span>.</p>
     <div class="form-row" style="max-width:320px;">
-      <div><input type="text" id="buscar" placeholder="Buscar por campo, zona o comuna…" /></div>
+      <div><input type="text" id="buscar" placeholder="Buscar por campo, agrícola, zona o comuna…" /></div>
     </div>
     <table id="tablaCampos">
       <thead>
@@ -108,7 +108,7 @@
     async function cargarCampos() {
       const { data, error } = await sb
         .from('campos')
-        .select('id, nombre, zona, comuna, meta_mensual, supervisor_habitual_id, profiles(nombre_completo)')
+        .select('id, nombre, zona, comuna, cliente, meta_mensual, supervisor_habitual_id, profiles(nombre_completo)')
         .eq('activo', true)
         .order('zona')
         .order('comuna')
@@ -172,7 +172,19 @@
         );
         const col = document.createElement('div');
         col.className = 'calendario-dia';
+        col.dataset.fecha = iso;
         col.innerHTML = `<h3>${nombreDia(dia)}</h3><div class="fecha">${fechaCorta(dia)}</div>`;
+
+        // Soltar un chip arrastrado desde otro día → mueve la visita a este día.
+        col.addEventListener('dragover', (e) => { e.preventDefault(); col.classList.add('drop-target'); });
+        col.addEventListener('dragleave', () => col.classList.remove('drop-target'));
+        col.addEventListener('drop', (e) => {
+          e.preventDefault();
+          col.classList.remove('drop-target');
+          const visitaId = e.dataTransfer.getData('text/plain');
+          if (visitaId) moverVisita(visitaId, iso);
+        });
+
         if (visitasDia.length === 0) {
           col.innerHTML += `<div class="chip-vacio">Sin visitas</div>`;
         } else {
@@ -180,17 +192,46 @@
             const cls = supervisorClase(v.profiles?.nombre_completo);
             const chip = document.createElement('div');
             chip.className = 'chip ' + cls;
-            chip.innerHTML = `
-              <div class="chip-info">
-                <span class="chip-campo">${escapeHtml(v.campos?.nombre || '')}</span>
-                <span class="chip-sub">${escapeHtml(v.profiles?.nombre_completo || '')} · ${escapeHtml(v.campos?.comuna || v.campos?.zona || '')}</span>
-              </div>`;
+            chip.draggable = true;
+            chip.title = 'Arrastra para mover de día';
+            chip.addEventListener('dragstart', (e) => {
+              e.dataTransfer.setData('text/plain', v.id);
+              e.dataTransfer.effectAllowed = 'move';
+              chip.classList.add('dragging');
+            });
+            chip.addEventListener('dragend', () => chip.classList.remove('dragging'));
+
+            const info = document.createElement('div');
+            info.className = 'chip-info';
+            const campoSpan = document.createElement('span');
+            campoSpan.className = 'chip-campo';
+            campoSpan.textContent = v.campos?.nombre || '';
+            const subSpan = document.createElement('span');
+            subSpan.className = 'chip-sub';
+            subSpan.textContent = v.campos?.comuna || v.campos?.zona || '';
+
+            const selSupChip = document.createElement('select');
+            selSupChip.className = 'chip-sup';
+            selSupChip.innerHTML = supervisores.map((s) =>
+              `<option value="${s.id}" ${s.id === v.supervisor_id ? 'selected' : ''}>${escapeHtml(s.nombre_completo)}</option>`
+            ).join('');
+            // Que abrir/usar el select no dispare el drag del chip.
+            selSupChip.addEventListener('mousedown', (e) => e.stopPropagation());
+            selSupChip.addEventListener('click', (e) => e.stopPropagation());
+            selSupChip.addEventListener('change', (e) => cambiarSupervisorChip(v.id, e.target.value));
+
+            info.appendChild(campoSpan);
+            info.appendChild(selSupChip);
+            info.appendChild(subSpan);
+
             const btnX = document.createElement('button');
             btnX.type = 'button';
             btnX.className = 'chip-x';
             btnX.title = 'Quitar';
             btnX.textContent = '×';
             btnX.addEventListener('click', () => quitar(v.id));
+
+            chip.appendChild(info);
             chip.appendChild(btnX);
             col.appendChild(chip);
           }
@@ -209,13 +250,40 @@
       pintarTablaCampos();
     }
 
+    // Arrastrar un chip a otro día: solo cambia fecha_planificada, mantiene supervisor y campo.
+    async function moverVisita(id, nuevaFecha) {
+      const visita = planSemana.find((v) => v.id === id);
+      if (!visita || visita.fecha_planificada === nuevaFecha) return;
+      const { error } = await sb.from('visitas').update({ fecha_planificada: nuevaFecha }).eq('id', id);
+      if (error) { alert('No se pudo mover la visita: ' + error.message); return; }
+      await cargarPlanSemana();
+      pintarStats();
+      pintarCalendario();
+      pintarTablaCampos();
+    }
+
+    // Cambiar el supervisor directo desde el chip: el chip recalcula su color solo
+    // (pintarCalendario vuelve a leer supervisorClase con el nuevo supervisor_id).
+    async function cambiarSupervisorChip(id, nuevoSupervisorId) {
+      const { error } = await sb.from('visitas').update({ supervisor_id: nuevoSupervisorId }).eq('id', id);
+      if (error) { alert('No se pudo cambiar el supervisor: ' + error.message); return; }
+      await cargarPlanSemana();
+      pintarStats();
+      pintarCalendario();
+      pintarTablaCampos();
+    }
+
     function pintarTablaCampos() {
       const filtro = document.getElementById('buscar').value.trim().toLowerCase();
       const dias = diasHabiles(monday);
       const yaPlanificados = new Set(planSemana.map((v) => v.campo_id));
 
       let filas = campos.filter((c) =>
-        !filtro || c.nombre.toLowerCase().includes(filtro) || (c.zona || '').toLowerCase().includes(filtro) || (c.comuna || '').toLowerCase().includes(filtro)
+        !filtro
+        || c.nombre.toLowerCase().includes(filtro)
+        || (c.zona || '').toLowerCase().includes(filtro)
+        || (c.comuna || '').toLowerCase().includes(filtro)
+        || (c.cliente || '').toLowerCase().includes(filtro)
       );
 
       filas = filas.map((c) => {
