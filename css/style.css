@@ -342,7 +342,24 @@ td.col-meta input.inline-edit { width: 62px; }
   text-overflow: ellipsis;
 }
 .chip .chip-sub { font-size: 0.72rem; opacity: 0.9; display: block; }
-.chip button.chip-x {
+.chip .chip-editar { display: none; margin-top: 4px; }
+.chip.editando .chip-editar { display: block; }
+.chip select.chip-sup, .chip select.chip-dia {
+  width: 100%;
+  padding: 2px 4px;
+  font-size: 0.72rem;
+  margin: 3px 0;
+  border: 1px solid rgba(255,255,255,0.55);
+  border-radius: 4px;
+  background: rgba(255,255,255,0.18);
+  color: white;
+}
+.chip select.chip-sup option, .chip select.chip-dia option { color: #111; }
+.chip { cursor: grab; }
+.chip.dragging { opacity: 0.35; }
+.calendario-dia.drop-target { outline: 2px dashed var(--primary); outline-offset: 2px; }
+.chip-acciones { display: flex; flex-direction: column; gap: 4px; align-items: center; flex-shrink: 0; }
+.chip button.chip-x, .chip button.chip-lapiz {
   background: rgba(255,255,255,0.25);
   border: none;
   color: white;
@@ -355,22 +372,5 @@ td.col-meta input.inline-edit { width: 62px; }
   padding: 0;
   flex-shrink: 0;
 }
-.chip button.chip-x:hover { background: rgba(255,255,255,0.45); }
-
-@media (max-width: 900px) {
-  .calendario { grid-template-columns: 1fr 1fr; }
-}
-@media (max-width: 560px) {
-  .calendario { grid-template-columns: 1fr; }
-}
-.chip select.chip-sup, .chip select.chip-dia {
-  width: 100%;
-  padding: 2px 4px;
-  font-size: 0.72rem;
-  margin: 3px 0;
-  border: 1px solid rgba(255,255,255,0.55);
-  border-radius: 4px;
-  background: rgba(255,255,255,0.18);
-  color: white;
-}
-.chip select.chip-sup option, .chip select.chip-dia option { color: #111; }
+.chip button.chip-lapiz { font-size: 0.62rem; }
+.chip button.chip-x:hover, .chip button.chip-lapiz:hover { background: rgba(255,255,255,0.45); }
