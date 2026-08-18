@@ -26,7 +26,11 @@
     <div class="calendario" id="calendario"></div>
 
     <h2>Agregar visitas a la semana</h2>
-    <p class="subtitle" id="hintCandidatos">Los campos sin ninguna visita este mes aparecen marcados como <span class="tag-atrasado">atrasado</span>.</p>
+    <p class="subtitle" id="hintCandidatos">
+      Los campos sin ninguna visita este mes aparecen marcados como <span class="tag-atrasado">atrasado</span>.
+      Los <span class="tag-grupo">grupo</span> son varios campos pegados de la misma agrícola: se agendan juntos en una sola fila.
+      Los <span class="tag-cerca">cerca</span> siguen siendo campos independientes, pero al marcar uno se marcan solos los vecinos (puedes desmarcarlos).
+    </p>
     <div class="form-row" style="max-width:320px;">
       <div><input type="text" id="buscar" placeholder="Buscar por campo, agrícola, zona o comuna…" /></div>
     </div>
@@ -60,6 +64,7 @@
 
     let supervisores = [];
     let campos = [];
+    let camposPorId = {};   // id -> campo (para saber a qué grupo pertenece cada visita)
     let hechoPorCampo = {}; // campo_id -> n visitas completadas este mes calendario
     let planSemana = [];    // visitas ya existentes para la semana elegida
     let filtroSupervisorId = null; // null = "Todos"
@@ -108,14 +113,22 @@
     async function cargarCampos() {
       const { data, error } = await sb
         .from('campos')
-        .select('id, nombre, zona, comuna, cliente, meta_mensual, supervisor_habitual_id, profiles(nombre_completo)')
+        .select('id, nombre, zona, comuna, cliente, meta_mensual, supervisor_habitual_id, grupo_id, grupos_campos(id, nombre, tipo, notas), profiles(nombre_completo)')
         .eq('activo', true)
         .order('zona')
         .order('comuna')
         .order('nombre');
       if (error) { console.error(error); return; }
       campos = data || [];
+      camposPorId = {};
+      for (const c of campos) camposPorId[c.id] = c;
     }
+
+    // Grupo "fijo" = se agenda siempre junto (una sola fila / un solo chip).
+    // Grupo "sugerido" = campos independientes que conviene visitar el mismo día.
+    function grupoDe(campo) { return campo?.grupos_campos || null; }
+    function esFijo(campo) { return grupoDe(campo)?.tipo === 'fijo'; }
+    function esSugerido(campo) { return grupoDe(campo)?.tipo === 'sugerido'; }
 
     async function cargarHechoEsteMes() {
       const hoy = new Date();
@@ -161,6 +174,46 @@
       }
     }
 
+    // Junta en un solo chip las visitas de un mismo grupo fijo que caen
+    // el mismo día y con el mismo supervisor (ej. los 3 Alsacia).
+    function agruparVisitasDelDia(visitasDia) {
+      const bloques = [];
+      const porClave = {};
+      for (const v of visitasDia) {
+        const campo = camposPorId[v.campo_id];
+        const grupo = esFijo(campo) ? grupoDe(campo) : null;
+        if (!grupo) {
+          bloques.push({
+            ids: [v.id],
+            titulo: v.campos?.nombre || '',
+            detalle: v.campos?.comuna || v.campos?.zona || '',
+            supervisorId: v.supervisor_id,
+            supervisorNombre: v.profiles?.nombre_completo,
+            nCampos: 1,
+            campos: [v.campos?.nombre || ''],
+          });
+          continue;
+        }
+        const clave = grupo.id + '|' + v.supervisor_id;
+        if (!porClave[clave]) {
+          porClave[clave] = {
+            ids: [],
+            titulo: grupo.nombre,
+            detalle: v.campos?.comuna || v.campos?.zona || '',
+            supervisorId: v.supervisor_id,
+            supervisorNombre: v.profiles?.nombre_completo,
+            nCampos: 0,
+            campos: [],
+          };
+          bloques.push(porClave[clave]);
+        }
+        porClave[clave].ids.push(v.id);
+        porClave[clave].nCampos++;
+        porClave[clave].campos.push(v.campos?.nombre || '');
+      }
+      return bloques;
+    }
+
     function pintarCalendario() {
       const cont = document.getElementById('calendario');
       cont.innerHTML = '';
@@ -175,27 +228,31 @@
         col.dataset.fecha = iso;
         col.innerHTML = `<h3>${nombreDia(dia)}</h3><div class="fecha">${fechaCorta(dia)}</div>`;
 
-        // Soltar un chip arrastrado desde otro día → mueve la visita a este día.
+        // Soltar un chip arrastrado desde otro día → mueve la(s) visita(s) a este día.
         col.addEventListener('dragover', (e) => { e.preventDefault(); col.classList.add('drop-target'); });
         col.addEventListener('dragleave', () => col.classList.remove('drop-target'));
         col.addEventListener('drop', (e) => {
           e.preventDefault();
           col.classList.remove('drop-target');
-          const visitaId = e.dataTransfer.getData('text/plain');
-          if (visitaId) moverVisita(visitaId, iso);
+          const payload = e.dataTransfer.getData('text/plain');
+          if (payload) moverVisitas(payload.split(','), iso);
         });
 
-        if (visitasDia.length === 0) {
+        const bloques = agruparVisitasDelDia(visitasDia);
+
+        if (bloques.length === 0) {
           col.innerHTML += `<div class="chip-vacio">Sin visitas</div>`;
         } else {
-          for (const v of visitasDia) {
-            const cls = supervisorClase(v.profiles?.nombre_completo);
+          for (const b of bloques) {
+            const cls = supervisorClase(b.supervisorNombre);
             const chip = document.createElement('div');
             chip.className = 'chip ' + cls;
             chip.draggable = true;
-            chip.title = 'Puedes arrastrarlo a otro día, o usar el selector de día de abajo';
+            chip.title = b.nCampos > 1
+              ? `Grupo de ${b.nCampos} campos: ${b.campos.join(', ')}`
+              : 'Puedes arrastrarlo a otro día, o usar el lápiz para editarlo';
             chip.addEventListener('dragstart', (e) => {
-              e.dataTransfer.setData('text/plain', v.id);
+              e.dataTransfer.setData('text/plain', b.ids.join(','));
               e.dataTransfer.effectAllowed = 'move';
               chip.classList.add('dragging');
             });
@@ -205,25 +262,38 @@
             info.className = 'chip-info';
             const campoSpan = document.createElement('span');
             campoSpan.className = 'chip-campo';
-            campoSpan.textContent = v.campos?.nombre || '';
+            campoSpan.textContent = b.titulo;
+            if (b.nCampos > 1) {
+              const badge = document.createElement('span');
+              badge.className = 'chip-badge';
+              badge.textContent = `${b.nCampos} campos`;
+              campoSpan.appendChild(badge);
+            }
             const subSpan = document.createElement('span');
             subSpan.className = 'chip-sub';
-            subSpan.textContent = `${v.profiles?.nombre_completo || 'Sin asignar'} · ${v.campos?.comuna || v.campos?.zona || ''}`;
+            subSpan.textContent = `${b.supervisorNombre || 'Sin asignar'} · ${b.detalle}`;
 
             // Los selectores de supervisor/día quedan ocultos por defecto (chip
-            // "limpio", como antes); el lápiz los muestra/oculta para editar.
+            // "limpio"); el lápiz los muestra/oculta para editar.
             const editar = document.createElement('div');
             editar.className = 'chip-editar';
+
+            if (b.nCampos > 1) {
+              const lista = document.createElement('div');
+              lista.className = 'chip-lista';
+              lista.textContent = b.campos.join(' · ');
+              editar.appendChild(lista);
+            }
 
             const selSupChip = document.createElement('select');
             selSupChip.className = 'chip-sup';
             selSupChip.innerHTML = supervisores.map((s) =>
-              `<option value="${s.id}" ${s.id === v.supervisor_id ? 'selected' : ''}>${escapeHtml(s.nombre_completo)}</option>`
+              `<option value="${s.id}" ${s.id === b.supervisorId ? 'selected' : ''}>${escapeHtml(s.nombre_completo)}</option>`
             ).join('');
             // Que abrir/usar el select no dispare el drag del chip.
             selSupChip.addEventListener('mousedown', (e) => e.stopPropagation());
             selSupChip.addEventListener('click', (e) => e.stopPropagation());
-            selSupChip.addEventListener('change', (e) => cambiarSupervisorChip(v.id, e.target.value));
+            selSupChip.addEventListener('change', (e) => cambiarSupervisorVisitas(b.ids, e.target.value));
 
             // Selector de día: forma segura de mover la visita (el arrastre con el
             // mouse no es confiable en todos los navegadores/touchpads, este selector
@@ -236,7 +306,7 @@
             }).join('');
             selDiaChip.addEventListener('mousedown', (e) => e.stopPropagation());
             selDiaChip.addEventListener('click', (e) => e.stopPropagation());
-            selDiaChip.addEventListener('change', (e) => moverVisita(v.id, e.target.value));
+            selDiaChip.addEventListener('change', (e) => moverVisitas(b.ids, e.target.value));
 
             editar.appendChild(selSupChip);
             editar.appendChild(selDiaChip);
@@ -262,10 +332,10 @@
             const btnX = document.createElement('button');
             btnX.type = 'button';
             btnX.className = 'chip-x';
-            btnX.title = 'Quitar';
+            btnX.title = b.nCampos > 1 ? `Quitar las ${b.nCampos} visitas del grupo` : 'Quitar';
             btnX.textContent = '×';
             btnX.addEventListener('mousedown', (e) => e.stopPropagation());
-            btnX.addEventListener('click', (e) => { e.stopPropagation(); quitar(v.id); });
+            btnX.addEventListener('click', (e) => { e.stopPropagation(); quitarVisitas(b.ids, b.titulo); });
 
             acciones.appendChild(btnLapiz);
             acciones.appendChild(btnX);
@@ -279,37 +349,95 @@
       }
     }
 
-    async function quitar(id) {
-      if (!confirm('¿Quitar esta visita planificada?')) return;
-      const { error } = await sb.from('visitas').delete().eq('id', id);
-      if (error) { alert('Error: ' + error.message); return; }
+    async function refrescar() {
       await cargarPlanSemana();
       pintarStats();
       pintarCalendario();
       pintarTablaCampos();
     }
 
-    // Arrastrar un chip a otro día: solo cambia fecha_planificada, mantiene supervisor y campo.
-    async function moverVisita(id, nuevaFecha) {
-      const visita = planSemana.find((v) => v.id === id);
-      if (!visita || visita.fecha_planificada === nuevaFecha) return;
-      const { error } = await sb.from('visitas').update({ fecha_planificada: nuevaFecha }).eq('id', id);
-      if (error) { alert('No se pudo mover la visita: ' + error.message); return; }
-      await cargarPlanSemana();
-      pintarStats();
-      pintarCalendario();
-      pintarTablaCampos();
+    async function quitarVisitas(ids, titulo) {
+      const pregunta = ids.length > 1
+        ? `¿Quitar las ${ids.length} visitas del grupo "${titulo}"?`
+        : '¿Quitar esta visita planificada?';
+      if (!confirm(pregunta)) return;
+      for (const id of ids) {
+        const { error } = await sb.from('visitas').delete().eq('id', id);
+        if (error) { alert('Error: ' + error.message); return; }
+      }
+      await refrescar();
     }
 
-    // Cambiar el supervisor directo desde el chip: el chip recalcula su color solo
-    // (pintarCalendario vuelve a leer supervisorClase con el nuevo supervisor_id).
-    async function cambiarSupervisorChip(id, nuevoSupervisorId) {
-      const { error } = await sb.from('visitas').update({ supervisor_id: nuevoSupervisorId }).eq('id', id);
-      if (error) { alert('No se pudo cambiar el supervisor: ' + error.message); return; }
-      await cargarPlanSemana();
-      pintarStats();
-      pintarCalendario();
-      pintarTablaCampos();
+    // Mover a otro día: solo cambia fecha_planificada, mantiene supervisor y campo.
+    async function moverVisitas(ids, nuevaFecha) {
+      for (const id of ids) {
+        const visita = planSemana.find((v) => v.id === id);
+        if (!visita || visita.fecha_planificada === nuevaFecha) continue;
+        const { error } = await sb.from('visitas').update({ fecha_planificada: nuevaFecha }).eq('id', id);
+        if (error) { alert('No se pudo mover la visita: ' + error.message); return; }
+      }
+      await refrescar();
+    }
+
+    // Cambiar el supervisor directo desde el chip: el chip recalcula su color solo.
+    async function cambiarSupervisorVisitas(ids, nuevoSupervisorId) {
+      for (const id of ids) {
+        const { error } = await sb.from('visitas').update({ supervisor_id: nuevoSupervisorId }).eq('id', id);
+        if (error) { alert('No se pudo cambiar el supervisor: ' + error.message); return; }
+      }
+      await refrescar();
+    }
+
+    // Arma las filas de la tabla: los grupos fijos ocupan UNA fila con todos
+    // sus campos adentro; el resto (sueltos y grupos sugeridos) va fila a fila.
+    function armarFilas(filtro) {
+      const coincide = (c) =>
+        !filtro
+        || c.nombre.toLowerCase().includes(filtro)
+        || (c.zona || '').toLowerCase().includes(filtro)
+        || (c.comuna || '').toLowerCase().includes(filtro)
+        || (c.cliente || '').toLowerCase().includes(filtro)
+        || (grupoDe(c)?.nombre || '').toLowerCase().includes(filtro);
+
+      const filas = [];
+      const gruposHechos = {};
+
+      for (const c of campos) {
+        if (esFijo(c)) {
+          const g = grupoDe(c);
+          if (gruposHechos[g.id]) continue;
+          gruposHechos[g.id] = true;
+          const miembros = campos.filter((x) => x.grupo_id === g.id);
+          if (!miembros.some(coincide)) continue;
+          filas.push({ tipo: 'grupo', grupo: g, miembros, ref: miembros[0] });
+        } else {
+          if (!coincide(c)) continue;
+          filas.push({ tipo: 'campo', grupo: esSugerido(c) ? grupoDe(c) : null, miembros: [c], ref: c });
+        }
+      }
+
+      // Métricas: para un grupo se suman las de todos sus campos.
+      for (const f of filas) {
+        f.meta = f.miembros.reduce((a, c) => a + (Number(c.meta_mensual) || 0), 0);
+        f.hecho = f.miembros.reduce((a, c) => a + (hechoPorCampo[c.id] || 0), 0);
+        f.pendiente = f.meta - f.hecho;
+        f.atrasado = f.hecho === 0 && f.meta > 0;
+      }
+
+      return filas.sort((a, b) => {
+        // Si hay un supervisor filtrado, sus campos habituales aparecen primero.
+        if (filtroSupervisorId !== null) {
+          const aEsSuyo = a.miembros.some((c) => c.supervisor_habitual_id === filtroSupervisorId);
+          const bEsSuyo = b.miembros.some((c) => c.supervisor_habitual_id === filtroSupervisorId);
+          if (aEsSuyo !== bEsSuyo) return aEsSuyo ? -1 : 1;
+        }
+        const az = a.ref.zona || '', bz = b.ref.zona || '';
+        if (az !== bz) return az.localeCompare(bz);
+        const ac = a.ref.comuna || '', bc = b.ref.comuna || '';
+        if (ac !== bc) return ac.localeCompare(bc);
+        if (a.atrasado !== b.atrasado) return a.atrasado ? -1 : 1;
+        return b.pendiente - a.pendiente;
+      });
     }
 
     function pintarTablaCampos() {
@@ -324,58 +452,48 @@
         diasPorCampo[v.campo_id].add(v.fecha_planificada);
       }
 
-      let filas = campos.filter((c) =>
-        !filtro
-        || c.nombre.toLowerCase().includes(filtro)
-        || (c.zona || '').toLowerCase().includes(filtro)
-        || (c.comuna || '').toLowerCase().includes(filtro)
-        || (c.cliente || '').toLowerCase().includes(filtro)
-      );
-
-      filas = filas.map((c) => {
-        const hecho = hechoPorCampo[c.id] || 0;
-        const pendiente = (c.meta_mensual || 0) - hecho;
-        return { ...c, hecho, pendiente, atrasado: hecho === 0 && (c.meta_mensual || 0) > 0 };
-      }).sort((a, b) => {
-        // Si hay un supervisor filtrado, sus campos habituales aparecen primero
-        // (son las "alternativas" más obvias para asignarle), sin ocultar el resto.
-        if (filtroSupervisorId !== null) {
-          const aEsSuyo = a.supervisor_habitual_id === filtroSupervisorId;
-          const bEsSuyo = b.supervisor_habitual_id === filtroSupervisorId;
-          if (aEsSuyo !== bEsSuyo) return aEsSuyo ? -1 : 1;
-        }
-        if ((a.zona || '') !== (b.zona || '')) return (a.zona || '').localeCompare(b.zona || '');
-        if ((a.comuna || '') !== (b.comuna || '')) return (a.comuna || '').localeCompare(b.comuna || '');
-        if (a.atrasado !== b.atrasado) return a.atrasado ? -1 : 1;
-        return b.pendiente - a.pendiente;
-      });
-
+      const filas = armarFilas(filtro);
       const tbody = document.querySelector('#tablaCampos tbody');
       tbody.innerHTML = '';
-      for (const c of filas) {
+
+      for (const f of filas) {
         const tr = document.createElement('tr');
-        const diasUsados = diasPorCampo[c.id] || new Set();
-        const yaEsta = diasUsados.size > 0;
+        const ids = f.miembros.map((c) => c.id);
+
+        // Días ocupados: para un grupo, la unión de los de sus campos.
+        const diasUsados = new Set();
+        for (const c of f.miembros) {
+          for (const d of (diasPorCampo[c.id] || [])) diasUsados.add(d);
+        }
         const nombresDiasUsados = dias
           .filter((d) => diasUsados.has(toISODate(d)))
           .map((d) => nombreDia(d).slice(0, 3))
           .join(', ');
 
+        const esGrupo = f.tipo === 'grupo';
+        const titulo = esGrupo ? f.grupo.nombre : f.ref.nombre;
+        const etiqueta = esGrupo
+          ? ` <span class="tag-grupo">grupo · ${f.miembros.length} campos</span>`
+          : (f.grupo ? ` <span class="tag-cerca">cerca: ${escapeHtml(f.grupo.nombre)}</span>` : '');
+        const detalle = esGrupo
+          ? `<div class="sub-campos">${escapeHtml(f.miembros.map((c) => c.nombre).join(' · '))}</div>`
+          : '';
+
         tr.innerHTML = `
-          <td><input type="checkbox" class="chkCampo" data-id="${c.id}" /></td>
-          <td><strong>${escapeHtml(c.nombre)}</strong>${c.atrasado ? ' <span class="tag-atrasado">atrasado</span>' : ''}${yaEsta ? ` <span class="subtitle" style="font-size:0.78rem;">(ya: ${nombresDiasUsados})</span>` : ''}</td>
-          <td>${escapeHtml(c.cliente || '')}</td>
-          <td>${escapeHtml(c.zona || '')}</td>
-          <td>${escapeHtml(c.comuna || '')}</td>
-          <td>${c.meta_mensual}</td>
-          <td>${c.hecho}</td>
-          <td>${c.pendiente > 0 ? c.pendiente : 0}</td>
+          <td><input type="checkbox" class="chkCampo" data-ids="${ids.join(',')}" ${f.grupo && !esGrupo ? `data-sug="${f.grupo.id}"` : ''} /></td>
+          <td><strong>${escapeHtml(titulo)}</strong>${f.atrasado ? ' <span class="tag-atrasado">atrasado</span>' : ''}${etiqueta}${diasUsados.size ? ` <span class="subtitle" style="font-size:0.78rem;">(ya: ${nombresDiasUsados})</span>` : ''}${detalle}</td>
+          <td>${escapeHtml(f.ref.cliente || '')}</td>
+          <td>${escapeHtml(f.ref.zona || '')}</td>
+          <td>${escapeHtml(f.ref.comuna || '')}</td>
+          <td>${f.meta}</td>
+          <td>${f.hecho}</td>
+          <td>${f.pendiente > 0 ? f.pendiente : 0}</td>
           <td></td>
           <td></td>`;
 
         // Supervisor por defecto: si hay un filtro activo, se prioriza ese supervisor
         // (para asignar rápido); si no, el supervisor habitual del campo.
-        const supervisorPorDefecto = filtroSupervisorId !== null ? filtroSupervisorId : c.supervisor_habitual_id;
+        const supervisorPorDefecto = filtroSupervisorId !== null ? filtroSupervisorId : f.ref.supervisor_habitual_id;
 
         const tdSup = tr.children[8];
         const selSup = document.createElement('select');
@@ -402,6 +520,34 @@
 
         tbody.appendChild(tr);
       }
+
+      // Campos "cerca" (grupos sugeridos, ej. Garcés): al marcar uno se marcan
+      // solos sus vecinos, con el mismo día y supervisor. Se pueden desmarcar.
+      tbody.querySelectorAll('.chkCampo[data-sug]').forEach((chk) => {
+        chk.addEventListener('change', () => {
+          if (!chk.checked) return;
+          const tr = chk.closest('tr');
+          const dia = tr.querySelector('.selDia').value;
+          const sup = tr.querySelector('.selSup').value;
+          const vecinos = tbody.querySelectorAll(`.chkCampo[data-sug="${chk.dataset.sug}"]`);
+          let agregados = 0;
+          vecinos.forEach((otro) => {
+            if (otro === chk || otro.checked) return;
+            const trOtro = otro.closest('tr');
+            const selDiaOtro = trOtro.querySelector('.selDia');
+            const opcion = Array.from(selDiaOtro.options).find((o) => o.value === dia && !o.disabled);
+            if (opcion) selDiaOtro.value = dia;
+            if (sup) trOtro.querySelector('.selSup').value = sup;
+            otro.checked = true;
+            agregados++;
+          });
+          if (agregados > 0) {
+            const nombreGrupo = tr.querySelector('.tag-cerca')?.textContent.replace('cerca: ', '') || '';
+            document.getElementById('msg').innerHTML =
+              `<div class="msg msg-ok">Se marcaron también ${agregados} campo(s) cercano(s) del grupo "${escapeHtml(nombreGrupo)}". Desmarca los que no vayas a visitar.</div>`;
+          }
+        });
+      });
     }
 
     async function guardarSeleccion() {
@@ -419,13 +565,16 @@
           alert('Falta elegir supervisor en algún campo marcado.');
           return;
         }
-        filas.push({
-          campo_id: chk.dataset.id,
-          supervisor_id: supervisorId,
-          fecha_planificada: dia,
-          estado: 'planificada',
-          creado_por: profile.id,
-        });
+        // Un grupo fijo trae varios campo_id en data-ids: se crea una visita por cada uno.
+        for (const campoId of chk.dataset.ids.split(',')) {
+          filas.push({
+            campo_id: campoId,
+            supervisor_id: supervisorId,
+            fecha_planificada: dia,
+            estado: 'planificada',
+            creado_por: profile.id,
+          });
+        }
       }
       const { error } = await sb.from('visitas').insert(filas);
       const msg = document.getElementById('msg');
@@ -434,10 +583,7 @@
         return;
       }
       msg.innerHTML = `<div class="msg msg-ok">Se agregaron ${filas.length} visita(s) a la semana.</div>`;
-      await cargarPlanSemana();
-      pintarStats();
-      pintarCalendario();
-      pintarTablaCampos();
+      await refrescar();
     }
 
     async function cargarTodo() {
