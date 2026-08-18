@@ -28,7 +28,7 @@
     <h2>Agregar visitas a la semana</h2>
     <p class="subtitle" id="hintCandidatos">
       Los campos sin ninguna visita este mes aparecen marcados como <span class="tag-atrasado">atrasado</span>.
-      Los <span class="tag-grupo">grupo</span> son varios campos pegados de la misma agrícola: se agendan juntos en una sola fila.
+      Los <span class="tag-grupo">grupo</span> son varios campos pegados de la misma agrícola: se agendan juntos en una sola fila y cuentan como una sola salida.
       Los <span class="tag-cerca">cerca</span> siguen siendo campos independientes, pero al marcar uno se marcan solos los vecinos (puedes desmarcarlos).
     </p>
     <div class="form-row" style="max-width:320px;">
@@ -64,9 +64,10 @@
 
     let supervisores = [];
     let campos = [];
-    let camposPorId = {};   // id -> campo (para saber a qué grupo pertenece cada visita)
-    let hechoPorCampo = {}; // campo_id -> n visitas completadas este mes calendario
-    let planSemana = [];    // visitas ya existentes para la semana elegida
+    let camposPorId = {};    // id -> campo (para saber a qué grupo pertenece cada visita)
+    let hechoPorCampo = {};  // campo_id -> n visitas completadas este mes calendario
+    let fechasPorCampo = {}; // campo_id -> días en que se visitó (para contar salidas de un grupo)
+    let planSemana = [];     // visitas ya existentes para la semana elegida
     let filtroSupervisorId = null; // null = "Todos"
 
     document.getElementById('prevWeek').addEventListener('click', () => { monday = addDays(monday, -7); cargarTodo(); });
@@ -136,14 +137,17 @@
       const finMes = toISODate(new Date(hoy.getFullYear(), hoy.getMonth() + 1, 0));
       const { data, error } = await sb
         .from('visitas')
-        .select('campo_id')
+        .select('campo_id, fecha_realizada')
         .eq('estado', 'completada')
         .gte('fecha_realizada', inicioMes)
         .lte('fecha_realizada', finMes);
       hechoPorCampo = {};
+      fechasPorCampo = {};
       if (error) { console.error(error); return; }
       for (const v of data || []) {
         hechoPorCampo[v.campo_id] = (hechoPorCampo[v.campo_id] || 0) + 1;
+        if (!fechasPorCampo[v.campo_id]) fechasPorCampo[v.campo_id] = new Set();
+        if (v.fecha_realizada) fechasPorCampo[v.campo_id].add(v.fecha_realizada);
       }
     }
 
@@ -416,10 +420,22 @@
         }
       }
 
-      // Métricas: para un grupo se suman las de todos sus campos.
+      // Métricas. Un grupo fijo se visita completo de una sola vez, así que su meta
+      // NO es la suma: es la de un solo campo (si sus campos tienen metas distintas,
+      // se toma la más exigente). Y lo "hecho" son las salidas al grupo, es decir la
+      // cantidad de días distintos en que se visitó, no la suma de visitas.
       for (const f of filas) {
-        f.meta = f.miembros.reduce((a, c) => a + (Number(c.meta_mensual) || 0), 0);
-        f.hecho = f.miembros.reduce((a, c) => a + (hechoPorCampo[c.id] || 0), 0);
+        if (f.tipo === 'grupo') {
+          f.meta = Math.max(...f.miembros.map((c) => Number(c.meta_mensual) || 0));
+          const fechas = new Set();
+          for (const c of f.miembros) {
+            for (const d of (fechasPorCampo[c.id] || [])) fechas.add(d);
+          }
+          f.hecho = fechas.size;
+        } else {
+          f.meta = Number(f.ref.meta_mensual) || 0;
+          f.hecho = hechoPorCampo[f.ref.id] || 0;
+        }
         f.pendiente = f.meta - f.hecho;
         f.atrasado = f.hecho === 0 && f.meta > 0;
       }
