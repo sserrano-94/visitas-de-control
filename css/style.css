@@ -374,6 +374,3 @@ td.col-meta input.inline-edit { width: 62px; }
   color: white;
 }
 .chip select.chip-sup option { color: #111; }
-.chip { cursor: grab; }
-.chip.dragging { opacity: 0.35; }
-.calendario-dia.drop-target { outline: 2px dashed var(--primary); outline-offset: 2px; }
