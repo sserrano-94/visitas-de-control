@@ -255,3 +255,111 @@ select.inline-edit, input.inline-edit {
   font-size: 0.85rem;
 }
 td.col-meta input.inline-edit { width: 62px; }
+/* ---- Planificador: filtro por supervisor, resumen y calendario semanal ---- */
+.filtro-sup-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 4px 0 16px;
+}
+.filtro-sup {
+  padding: 7px 16px;
+  border-radius: 999px;
+  border: 2px solid transparent;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 0.85rem;
+  font-weight: bold;
+  color: white;
+  opacity: 0.5;
+  background: #6b7280;
+}
+.filtro-sup:hover { opacity: 0.8; }
+.filtro-sup.activo { opacity: 1; border-color: rgba(0,0,0,0.35); }
+.filtro-sup.esteban { background: var(--azul); }
+.filtro-sup.josemiguel { background: var(--verde); }
+.filtro-sup.javier { background: var(--cafe); }
+.filtro-sup.cesar { background: var(--gris); }
+
+.stats-semana {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+  margin-bottom: 18px;
+}
+.stat-sup {
+  border-radius: 10px;
+  padding: 12px 14px;
+  color: white;
+  background: #6b7280;
+}
+.stat-sup .n { font-size: 1.5rem; font-weight: bold; }
+.stat-sup .lbl { font-size: 0.8rem; opacity: 0.92; }
+.stat-sup.esteban { background: var(--azul); }
+.stat-sup.josemiguel { background: var(--verde); }
+.stat-sup.javier { background: var(--cafe); }
+.stat-sup.cesar { background: var(--gris); }
+
+.calendario {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 10px;
+  margin-bottom: 22px;
+}
+.calendario-dia {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px;
+  min-height: 140px;
+}
+.calendario-dia h3 { margin: 0; font-size: 0.95rem; }
+.calendario-dia .fecha { color: var(--muted); font-size: 0.76rem; margin-bottom: 8px; }
+.calendario-dia .chip-vacio { color: var(--muted); font-size: 0.8rem; font-style: italic; }
+
+.chip {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  margin-bottom: 6px;
+  color: white;
+  background: #6b7280;
+}
+.chip.esteban { background: var(--azul); }
+.chip.josemiguel { background: var(--verde); }
+.chip.javier { background: var(--cafe); }
+.chip.cesar { background: var(--gris); }
+.chip .chip-info { overflow: hidden; }
+.chip .chip-campo {
+  font-weight: bold;
+  font-size: 0.85rem;
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.chip .chip-sub { font-size: 0.72rem; opacity: 0.9; display: block; }
+.chip button.chip-x {
+  background: rgba(255,255,255,0.25);
+  border: none;
+  color: white;
+  border-radius: 50%;
+  width: 18px;
+  height: 18px;
+  line-height: 1;
+  cursor: pointer;
+  font-size: 0.75rem;
+  padding: 0;
+  flex-shrink: 0;
+}
+.chip button.chip-x:hover { background: rgba(255,255,255,0.45); }
+
+@media (max-width: 900px) {
+  .calendario { grid-template-columns: 1fr 1fr; }
+}
+@media (max-width: 560px) {
+  .calendario { grid-template-columns: 1fr; }
+}
