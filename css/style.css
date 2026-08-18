@@ -419,3 +419,41 @@ td.col-meta input.inline-edit { width: 62px; }
   .dia-mes { min-height: 48px; padding: 4px; }
   .dia-mes .num { font-size: 0.72rem; }
 }
+/* ---- Grupos de campos (se visitan juntos) ---- */
+.tag-grupo {
+  background: #e8f0fe;
+  color: #1a4fa0;
+  border-radius: 6px;
+  padding: 1px 7px;
+  font-size: 0.75rem;
+  font-weight: bold;
+}
+.tag-cerca {
+  background: #eef7ee;
+  color: #2f6b34;
+  border-radius: 6px;
+  padding: 1px 7px;
+  font-size: 0.75rem;
+  font-weight: bold;
+}
+.sub-campos {
+  color: var(--muted);
+  font-size: 0.78rem;
+  margin-top: 2px;
+}
+.chip-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.3);
+  font-size: 0.66rem;
+  font-weight: bold;
+  vertical-align: middle;
+}
+.chip-lista {
+  font-size: 0.68rem;
+  opacity: 0.9;
+  margin-bottom: 4px;
+  line-height: 1.25;
+}
