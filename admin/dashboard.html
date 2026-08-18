@@ -10,13 +10,13 @@
   <div class="topbar" id="topbar"></div>
   <main>
     <h1>Dashboard — <span id="mesLabel"></span></h1>
-    <p class="subtitle">Meta vs. visitas completadas en el mes en curso.</p>
+    <p class="subtitle">Meta vs. visitas completadas en el mes en curso. Los grupos de campos que se visitan juntos cuentan como una sola salida.</p>
 
     <div class="stat-grid" id="statGrid"></div>
 
     <h2>Detalle por campo</h2>
     <div class="form-row" style="max-width:320px;">
-      <div><input type="text" id="buscar" placeholder="Buscar por campo o zona…" /></div>
+      <div><input type="text" id="buscar" placeholder="Buscar por campo, grupo o zona…" /></div>
     </div>
     <table id="tabla">
       <thead>
@@ -45,8 +45,8 @@
     const finMes = toISODate(new Date(hoy.getFullYear(), hoy.getMonth() + 1, 0));
 
     const [{ data: campos, error: e1 }, { data: visitas, error: e2 }] = await Promise.all([
-      sb.from('campos').select('id, nombre, zona, meta_mensual, supervisor_habitual_id, profiles(nombre_completo)').eq('activo', true),
-      sb.from('visitas').select('campo_id, supervisor_id, profiles!visitas_supervisor_id_fkey(nombre_completo)')
+      sb.from('campos').select('id, nombre, zona, meta_mensual, supervisor_habitual_id, grupo_id, grupos_campos(id, nombre, tipo), profiles(nombre_completo)').eq('activo', true),
+      sb.from('visitas').select('campo_id, supervisor_id, fecha_realizada, profiles!visitas_supervisor_id_fkey(nombre_completo)')
         .eq('estado', 'completada').gte('fecha_realizada', inicioMes).lte('fecha_realizada', finMes),
     ]);
 
@@ -55,28 +55,78 @@
     }
 
     const hechoPorCampo = {};
-    for (const v of visitas || []) hechoPorCampo[v.campo_id] = (hechoPorCampo[v.campo_id] || 0) + 1;
-
-    // Resumen por supervisor: meta agrupada por supervisor habitual del campo,
-    // hecho agrupado por quién realizó realmente la visita.
-    const metaPorSupervisor = {};
-    for (const c of campos || []) {
-      const nombre = c.profiles?.nombre_completo || 'Sin asignar';
-      metaPorSupervisor[nombre] = metaPorSupervisor[nombre] || { meta: 0, hecho: 0 };
-      metaPorSupervisor[nombre].meta += Number(c.meta_mensual || 0);
-    }
+    const fechasPorCampo = {};
     for (const v of visitas || []) {
+      hechoPorCampo[v.campo_id] = (hechoPorCampo[v.campo_id] || 0) + 1;
+      if (!fechasPorCampo[v.campo_id]) fechasPorCampo[v.campo_id] = new Set();
+      if (v.fecha_realizada) fechasPorCampo[v.campo_id].add(v.fecha_realizada);
+    }
+
+    const camposPorId = {};
+    for (const c of campos || []) camposPorId[c.id] = c;
+    const esFijo = (c) => c?.grupos_campos?.tipo === 'fijo';
+
+    // "Unidades de visita": un grupo fijo (ej. los 3 Alsacia) es UNA unidad, porque
+    // se visita todo de una vez. Su meta es la de un solo campo (la más exigente si
+    // difieren) y lo hecho son los días distintos en que se salió a ese grupo.
+    const unidades = [];
+    const gruposHechos = {};
+    for (const c of campos || []) {
+      if (esFijo(c)) {
+        const g = c.grupos_campos;
+        if (gruposHechos[g.id]) continue;
+        gruposHechos[g.id] = true;
+        const miembros = (campos || []).filter((x) => x.grupo_id === g.id);
+        const fechas = new Set();
+        for (const m of miembros) for (const d of (fechasPorCampo[m.id] || [])) fechas.add(d);
+        unidades.push({
+          nombre: g.nombre,
+          zona: miembros[0].zona,
+          supervisor: miembros[0].profiles?.nombre_completo || null,
+          meta: Math.max(...miembros.map((m) => Number(m.meta_mensual) || 0)),
+          hecho: fechas.size,
+          miembros: miembros.map((m) => m.nombre),
+        });
+      } else {
+        unidades.push({
+          nombre: c.nombre,
+          zona: c.zona,
+          supervisor: c.profiles?.nombre_completo || null,
+          meta: Number(c.meta_mensual || 0),
+          hecho: hechoPorCampo[c.id] || 0,
+          miembros: null,
+        });
+      }
+    }
+
+    // Resumen por supervisor: meta según el supervisor habitual de la unidad,
+    // hecho según quién salió realmente (una salida a un grupo cuenta 1, no N).
+    const porSupervisor = {};
+    const tocar = (nombre) => {
+      const k = nombre || 'Sin asignar';
+      porSupervisor[k] = porSupervisor[k] || { meta: 0, hecho: 0 };
+      return porSupervisor[k];
+    };
+    for (const u of unidades) tocar(u.supervisor).meta += u.meta;
+
+    const salidas = new Set();
+    for (const v of visitas || []) {
+      const campo = camposPorId[v.campo_id];
       const nombre = v.profiles?.nombre_completo || 'Sin asignar';
-      metaPorSupervisor[nombre] = metaPorSupervisor[nombre] || { meta: 0, hecho: 0 };
-      metaPorSupervisor[nombre].hecho += 1;
+      const clave = esFijo(campo)
+        ? `g|${campo.grupos_campos.id}|${v.fecha_realizada}|${v.supervisor_id}`
+        : `c|${v.campo_id}|${v.fecha_realizada}|${v.supervisor_id}`;
+      if (salidas.has(clave)) continue;
+      salidas.add(clave);
+      tocar(nombre).hecho += 1;
     }
 
     const statGrid = document.getElementById('statGrid');
     statGrid.innerHTML = '';
-    const nombres = Object.keys(metaPorSupervisor).sort();
+    const nombres = Object.keys(porSupervisor).sort();
     let totalMeta = 0, totalHecho = 0;
     for (const nombre of nombres) {
-      const { meta, hecho } = metaPorSupervisor[nombre];
+      const { meta, hecho } = porSupervisor[nombre];
       totalMeta += meta; totalHecho += hecho;
       const pct = meta > 0 ? Math.round((hecho / meta) * 100) : 0;
       statGrid.insertAdjacentHTML('beforeend', `
@@ -96,25 +146,28 @@
         <div class="progress-bar"><div style="width:${Math.min(pctTotal,100)}%;"></div></div>
       </div>`);
 
-    let filas = (campos || []).map((c) => {
-      const hecho = hechoPorCampo[c.id] || 0;
-      const meta = Number(c.meta_mensual || 0);
-      const pendiente = meta - hecho;
-      const pct = meta > 0 ? Math.round((hecho / meta) * 100) : (hecho > 0 ? 100 : 0);
-      return { ...c, hecho, meta, pendiente, pct };
+    const filas = unidades.map((u) => {
+      const pendiente = u.meta - u.hecho;
+      const pct = u.meta > 0 ? Math.round((u.hecho / u.meta) * 100) : (u.hecho > 0 ? 100 : 0);
+      return { ...u, pendiente, pct };
     }).sort((a, b) => (a.zona || '').localeCompare(b.zona || '') || a.nombre.localeCompare(b.nombre));
 
     function pintar() {
       const filtro = document.getElementById('buscar').value.trim().toLowerCase();
       const tbody = document.querySelector('#tabla tbody');
       tbody.innerHTML = '';
-      const visibles = filas.filter(c => !filtro || c.nombre.toLowerCase().includes(filtro) || (c.zona||'').toLowerCase().includes(filtro));
+      const visibles = filas.filter((c) =>
+        !filtro
+        || c.nombre.toLowerCase().includes(filtro)
+        || (c.zona || '').toLowerCase().includes(filtro)
+        || (c.miembros || []).some((m) => m.toLowerCase().includes(filtro))
+      );
       for (const c of visibles) {
         const tr = document.createElement('tr');
         tr.innerHTML = `
           <td>${escapeHtml(c.zona || '')}</td>
-          <td><strong>${escapeHtml(c.nombre)}</strong></td>
-          <td>${badgeSupervisor(c.profiles?.nombre_completo)}</td>
+          <td><strong>${escapeHtml(c.nombre)}</strong>${c.miembros ? ` <span class="tag-grupo">grupo · ${c.miembros.length} campos</span><div class="sub-campos">${escapeHtml(c.miembros.join(' · '))}</div>` : ''}</td>
+          <td>${badgeSupervisor(c.supervisor)}</td>
           <td>${c.meta}</td>
           <td>${c.hecho}</td>
           <td>${c.pendiente > 0 ? c.pendiente : 0}</td>
