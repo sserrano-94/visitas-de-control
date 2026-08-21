@@ -457,3 +457,23 @@ td.col-meta input.inline-edit { width: 62px; }
   margin-bottom: 4px;
   line-height: 1.25;
 }
+
+/* ---- Historial: la semana día por día ---- */
+.dia-bloque {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 14px;
+  margin-bottom: 12px;
+}
+.dia-bloque.es-hoy { border-color: var(--primary); border-width: 2px; }
+.dia-bloque h3 { margin: 0 0 8px 0; font-size: 1rem; }
+.dia-bloque table { margin: 0; }
+.tag-hoy {
+  background: var(--primary);
+  color: #fff;
+  border-radius: 6px;
+  padding: 1px 7px;
+  font-size: 0.7rem;
+  vertical-align: middle;
+}
