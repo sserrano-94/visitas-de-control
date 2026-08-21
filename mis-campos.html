@@ -64,6 +64,7 @@
     let campos = [];         // campos del supervisor elegido
     let rutaDeCampo = {};    // campo_id -> nombre de la ruta
     let hechoPorCampo = {};  // campo_id -> visitas completadas este mes
+    let bitacoraPorCampo = {}; // campo_id -> { ultima, pendientes }
     let supervisorId = esAdmin ? null : profile.id;
 
     document.getElementById('fBuscar').addEventListener('input', pintar);
@@ -78,6 +79,7 @@
 
     function nombreSupervisor() {
       if (!esAdmin) return profile.nombre_completo;
+      if (supervisorId === 'TODOS') return 'todos los supervisores';
       return supervisores.find((s) => s.id === supervisorId)?.nombre_completo || '';
     }
 
@@ -89,32 +91,39 @@
       if (!esAdmin) return;
       document.getElementById('boxSup').style.display = '';
       const sel = document.getElementById('fSupervisor');
-      sel.innerHTML = supervisores.map((s) => `<option value="${s.id}">${escapeHtml(s.nombre_completo)}</option>`).join('');
-      supervisorId = supervisores[0]?.id || null;
-      sel.value = supervisorId || '';
+      sel.innerHTML = '<option value="TODOS">Todos los supervisores</option>'
+        + supervisores.map((s) => `<option value="${s.id}">${escapeHtml(s.nombre_completo)}</option>`).join('');
+      supervisorId = 'TODOS';
+      sel.value = supervisorId;
       sel.addEventListener('change', () => { supervisorId = sel.value; cargar(); });
     }
 
     async function cargar() {
       if (!supervisorId) { mostrar('error', 'No hay supervisores activos.'); return; }
       document.getElementById('msg').innerHTML = '';
-      document.getElementById('titulo').textContent = esAdmin ? `Campos de ${nombreSupervisor()}` : 'Mis campos';
+      document.getElementById('titulo').textContent = esAdmin
+        ? (supervisorId === 'TODOS' ? 'Campos de todos los supervisores' : `Campos de ${nombreSupervisor()}`)
+        : 'Mis campos';
       document.getElementById('subtitle').textContent = esAdmin
-        ? 'Elige un supervisor y cópiale o mándale su lista de campos.'
-        : `Los campos que tienes a cargo, ${profile.nombre_completo}.`;
+        ? 'Elige un supervisor y cópiale o mándale su lista de campos. Aprieta el nombre de un campo para ver su bitácora.'
+        : `Los campos que tienes a cargo, ${profile.nombre_completo}. Aprieta el nombre de un campo para ver y escribir su bitácora.`;
 
       const hoy = new Date();
       const inicioMes = toISODate(new Date(hoy.getFullYear(), hoy.getMonth(), 1));
       const finMes = toISODate(new Date(hoy.getFullYear(), hoy.getMonth() + 1, 0));
 
-      const [rCampos, rRc, rVis] = await Promise.all([
-        sb.from('campos')
-          .select('id, nombre, cliente, zona, comuna, superficie_ha, meta_mensual, notas, grupos_campos(nombre, tipo)')
-          .eq('activo', true).eq('supervisor_habitual_id', supervisorId)
-          .order('zona').order('comuna').order('nombre'),
+      let qCampos = sb.from('campos')
+        .select('id, nombre, cliente, zona, comuna, superficie_ha, meta_mensual, notas, supervisor_habitual_id, grupos_campos(nombre, tipo), profiles(nombre_completo)')
+        .eq('activo', true);
+      if (supervisorId !== 'TODOS') qCampos = qCampos.eq('supervisor_habitual_id', supervisorId);
+      qCampos = qCampos.order('zona').order('comuna').order('nombre');
+
+      const [rCampos, rRc, rVis, rBit] = await Promise.all([
+        qCampos,
         sb.from('rutas_campos').select('campo_id, rutas(nombre, veces_mes, frecuencia)'),
         sb.from('visitas').select('campo_id').eq('estado', 'completada')
           .gte('fecha_realizada', inicioMes).lte('fecha_realizada', finMes),
+        sb.from('bitacora').select('campo_id, fecha, pendiente').order('fecha', { ascending: false }),
       ]);
       if (rCampos.error) { mostrar('error', 'No se pudieron cargar los campos: ' + rCampos.error.message); return; }
 
@@ -125,6 +134,14 @@
       }
       hechoPorCampo = {};
       for (const v of rVis.data || []) hechoPorCampo[v.campo_id] = (hechoPorCampo[v.campo_id] || 0) + 1;
+
+      // Resumen de bitácora por campo: última anotación y pendientes abiertos.
+      bitacoraPorCampo = {};
+      for (const n of rBit.data || []) {
+        const b = bitacoraPorCampo[n.campo_id] || (bitacoraPorCampo[n.campo_id] = { ultima: null, pendientes: 0 });
+        if (!b.ultima || n.fecha > b.ultima) b.ultima = n.fecha;
+        if (n.pendiente) b.pendientes++;
+      }
 
       pintar();
     }
@@ -155,13 +172,15 @@
       const visitas = lista.reduce((a, c) => a + (Number(c.meta_mensual) || 0), 0);
       const hechas = lista.reduce((a, c) => a + (hechoPorCampo[c.id] || 0), 0);
       const agricolas = new Set(lista.map((c) => c.cliente).filter(Boolean)).size;
+      const pendientes = lista.reduce((a, c) => a + (bitacoraPorCampo[c.id]?.pendientes || 0), 0);
       const cls = supervisorClase(nombreSupervisor());
       cont.innerHTML = `
         <div class="stat-sup ${cls}"><div class="n">${lista.length}</div><div class="lbl">campos a cargo</div></div>
         <div class="stat-sup ${cls}"><div class="n">${agricolas}</div><div class="lbl">agrícolas</div></div>
         <div class="stat-sup ${cls}"><div class="n">${ha.toLocaleString('es-CL')}</div><div class="lbl">hectáreas en total</div></div>
         <div class="stat-sup ${cls}"><div class="n">${visitas}</div><div class="lbl">visitas al mes</div></div>
-        <div class="stat-sup ${cls}"><div class="n">${hechas}</div><div class="lbl">hechas este mes</div></div>`;
+        <div class="stat-sup ${cls}"><div class="n">${hechas}</div><div class="lbl">hechas este mes</div></div>
+        <div class="stat-sup ${cls}"><div class="n">${pendientes}</div><div class="lbl">pendientes en bitácora</div></div>`;
     }
 
     function pintar() {
@@ -194,20 +213,22 @@
         const tabla = document.createElement('table');
         tabla.innerHTML = `<thead><tr>
           <th>Campo</th><th>Agrícola</th><th>Comuna</th><th>Hectáreas</th>
-          <th>Visitas al mes</th><th>Hechas este mes</th><th>Ruta</th></tr></thead><tbody></tbody>`;
+          <th>Visitas al mes</th><th>Hechas este mes</th><th>Bitácora</th><th>Ruta</th></tr></thead><tbody></tbody>`;
         const tb = tabla.querySelector('tbody');
         for (const c of grupos[k]) {
           const hechas = hechoPorCampo[c.id] || 0;
           const meta = Number(c.meta_mensual) || 0;
           const ruta = rutaDeCampo[c.id];
+          const bit = bitacoraPorCampo[c.id] || { ultima: null, pendientes: 0 };
           const tr = document.createElement('tr');
           tr.innerHTML = `
-            <td><strong>${escapeHtml(c.nombre)}</strong>${c.grupos_campos ? ` <span class="tag-${c.grupos_campos.tipo === 'fijo' ? 'grupo' : 'cerca'}">${escapeHtml(c.grupos_campos.nombre)}</span>` : ''}</td>
+            <td><a href="campo.html?id=${c.id}"><strong>${escapeHtml(c.nombre)}</strong></a>${c.grupos_campos ? ` <span class="tag-${c.grupos_campos.tipo === 'fijo' ? 'grupo' : 'cerca'}">${escapeHtml(c.grupos_campos.nombre)}</span>` : ''}</td>
             <td>${escapeHtml(c.cliente || '')}</td>
             <td>${escapeHtml(c.comuna || '')}</td>
             <td>${c.superficie_ha ? Number(c.superficie_ha).toLocaleString('es-CL') : '—'}</td>
             <td>${meta || '—'}</td>
             <td>${hechas}${meta && hechas < meta ? ` <span class="tag-atrasado">falta ${meta - hechas}</span>` : ''}</td>
+            <td>${bit.ultima ? `<span class="sub-campos">${escapeHtml(bit.ultima)}</span>` : '<span class="sub-campos">sin anotaciones</span>'}${bit.pendientes ? ` <span class="tag-atrasado">${bit.pendientes} pend.</span>` : ''}</td>
             <td><span class="sub-campos">${escapeHtml(ruta?.nombre || 'sin ruta')}</span></td>`;
           tb.appendChild(tr);
         }
