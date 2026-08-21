@@ -10,6 +10,7 @@ export function renderTopbar(profile, basePath = '', loginPath = 'login.html') {
     <div class="brand">🌱 Control de Visitas</div>
     <nav>
       <a href="${basePath}mi-semana.html">Mi semana</a>
+      <a href="${basePath}mis-campos.html">${isAdmin ? 'Campos por supervisor' : 'Mis campos'}</a>
       <a href="${basePath}historial.html">Historial</a>
       ${isAdmin ? `<a href="${basePath}admin/dashboard.html">Dashboard</a>` : ''}
       ${isAdmin ? `<a href="${basePath}admin/planificador.html">Planificador semanal</a>` : ''}
