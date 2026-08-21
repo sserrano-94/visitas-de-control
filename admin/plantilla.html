@@ -1,0 +1,567 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Plantilla mensual — Control de Visitas</title>
+<link rel="stylesheet" href="../css/style.css" />
+</head>
+<body>
+  <div class="topbar" id="topbar"></div>
+  <main>
+    <h1>Plantilla mensual</h1>
+    <p class="subtitle">Arma el mes completo de una vez, respetando las rutas, las metas de cada campo y los días que cada supervisor no está disponible.</p>
+
+    <div class="week-nav">
+      <button class="secondary" id="prevMes">← Mes anterior</button>
+      <strong id="mesLabel"></strong>
+      <button class="secondary" id="nextMes">Mes siguiente →</button>
+    </div>
+
+    <div id="msg"></div>
+
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px;">
+      <button id="btnGenerar">Generar propuesta del mes</button>
+      <button class="secondary" id="btnGuardar" disabled>Guardar las visitas en el plan</button>
+      <button class="secondary" id="btnBorrar">Borrar las visitas de este mes</button>
+    </div>
+
+    <div class="stats-semana" id="cargaSup"></div>
+    <div id="avisos"></div>
+
+    <h2>Calendario propuesto</h2>
+    <p class="subtitle">M = mañana, T = tarde. Las celdas vacías son tiempo libre.</p>
+    <div class="tabla-scroll">
+      <table id="tablaMes">
+        <thead></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <h2>Rutas <span class="subtitle" style="font-weight:normal;font-size:0.9rem;">— cambia supervisor, salidas o frecuencia y vuelve a generar</span></h2>
+    <div class="form-row" style="max-width:320px;">
+      <div><input type="text" id="buscarRuta" placeholder="Buscar ruta, campo o agrícola…" /></div>
+    </div>
+    <div class="tabla-scroll">
+      <table id="tablaRutas">
+        <thead>
+          <tr><th>Ruta</th><th>Tipo</th><th>Campos</th><th>Medios días</th><th>Salidas/mes</th><th>Frecuencia</th><th>Supervisor</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <h2>Días no disponibles</h2>
+    <p class="subtitle">Vacaciones, permisos o cualquier día en que un supervisor no sale a terreno.</p>
+    <div class="form-row" style="max-width:520px;">
+      <div><select id="ausSup"></select></div>
+      <div><input type="date" id="ausFecha" /></div>
+      <div><input type="text" id="ausMotivo" placeholder="Motivo (opcional)" /></div>
+      <div><button id="btnAusencia">Agregar</button></div>
+    </div>
+    <div id="listaAusencias"></div>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script type="module">
+    import { sb } from '../js/supabaseClient.js';
+    import { requireAdmin } from '../js/auth.js';
+    import { renderTopbar } from '../js/nav.js';
+    import { toISODate, nombreDia, supervisorClase, escapeHtml } from '../js/helpers.js';
+
+    const profile = await requireAdmin('../mi-semana.html', '../login.html');
+    if (!profile) throw new Error('no-admin');
+    renderTopbar(profile, '../');
+
+    const MESES = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
+
+    // Feriados de Chile (los de fin de semana no molestan, pero se dejan igual).
+    // Si aparece uno nuevo, se agrega a esta lista.
+    const FERIADOS = new Set([
+      '2026-01-01','2026-04-03','2026-04-04','2026-05-01','2026-05-21','2026-06-29','2026-07-16',
+      '2026-08-15','2026-09-18','2026-09-19','2026-10-12','2026-10-31','2026-11-01','2026-12-08','2026-12-25',
+      '2027-01-01','2027-03-26','2027-03-27','2027-05-01','2027-05-21','2027-06-21','2027-06-28','2027-07-16',
+      '2027-08-15','2027-09-17','2027-09-18','2027-10-11','2027-10-31','2027-11-01','2027-12-08','2027-12-25',
+    ]);
+
+    // Tope de medios días al mes que se pueden dedicar a Garcés (lo contratado).
+    const TOPE_GARCES = 21;
+
+    let hoy = new Date();
+    let anio = hoy.getFullYear();
+    let mes = hoy.getMonth(); // 0-11
+
+    let supervisores = [];
+    let rutas = [];
+    let ausencias = [];
+    let propuesta = null;
+
+    document.getElementById('prevMes').addEventListener('click', () => { mover(-1); });
+    document.getElementById('nextMes').addEventListener('click', () => { mover(1); });
+    document.getElementById('btnGenerar').addEventListener('click', generar);
+    document.getElementById('btnGuardar').addEventListener('click', guardar);
+    document.getElementById('btnBorrar').addEventListener('click', borrarMes);
+    document.getElementById('btnAusencia').addEventListener('click', agregarAusencia);
+    document.getElementById('buscarRuta').addEventListener('input', pintarRutas);
+
+    function mover(n) {
+      mes += n;
+      if (mes < 0) { mes = 11; anio--; }
+      if (mes > 11) { mes = 0; anio++; }
+      propuesta = null;
+      pintarTodo();
+    }
+
+    // ---------- carga de datos ----------
+    async function cargar() {
+      const [rSup, rRutas, rRc, rAus] = await Promise.all([
+        sb.from('profiles').select('id, nombre_completo').eq('activo', true).eq('rol', 'supervisor').order('nombre_completo'),
+        sb.from('rutas').select('id, nombre, tipo, supervisor_id, medios_dias, veces_mes, frecuencia, dias_seguidos, md_garces, orden, notas').eq('activo', true).order('orden'),
+        sb.from('rutas_campos').select('ruta_id, campos(id, nombre, cliente, latitud, longitud, meta_mensual)'),
+        sb.from('ausencias').select('id, supervisor_id, fecha, motivo').order('fecha'),
+      ]);
+      for (const r of [rSup, rRutas, rRc, rAus]) {
+        if (r.error) { mostrar('error', 'No se pudieron cargar los datos: ' + r.error.message); return false; }
+      }
+      supervisores = rSup.data || [];
+      rutas = (rRutas.data || []).map((r) => ({ ...r, campos: [] }));
+      const porId = new Map(rutas.map((r) => [r.id, r]));
+      for (const fila of rRc.data || []) {
+        const r = porId.get(fila.ruta_id);
+        if (r && fila.campos) r.campos.push(fila.campos);
+      }
+      ausencias = rAus.data || [];
+      return true;
+    }
+
+    function mostrar(tipo, texto) {
+      document.getElementById('msg').innerHTML = `<div class="msg msg-${tipo === 'error' ? 'error' : 'ok'}">${escapeHtml(texto)}</div>`;
+    }
+
+    // ---------- utilidades de fecha ----------
+    function diasHabilesMes(a, m) {
+      const out = [];
+      const d = new Date(a, m, 1);
+      while (d.getMonth() === m) {
+        const iso = toISODate(d);
+        if (d.getDay() >= 1 && d.getDay() <= 5 && !FERIADOS.has(iso)) out.push(new Date(d));
+        d.setDate(d.getDate() + 1);
+      }
+      return out;
+    }
+    function km(a, b) {
+      if (a?.latitud == null || b?.latitud == null) return 9999;
+      const R = 6371, r = Math.PI / 180;
+      const p1 = a.latitud * r, p2 = b.latitud * r;
+      const dp = p2 - p1, dl = (b.longitud - a.longitud) * r;
+      const h = Math.sin(dp / 2) ** 2 + Math.cos(p1) * Math.cos(p2) * Math.sin(dl / 2) ** 2;
+      return 2 * R * Math.asin(Math.sqrt(h));
+    }
+    function distanciaEntreRutas(r1, r2) {
+      let min = 9999;
+      for (const a of r1.campos) for (const b of r2.campos) min = Math.min(min, km(a, b));
+      return min;
+    }
+
+    // ---------- el generador ----------
+    // Reglas: cada día son 2 medios días. Una ruta de día completo ocupa los dos.
+    // Dos rutas de medio día pueden compartir el día solo si están a menos de 45 km.
+    // Si una ruta va más de una vez al mes, entre salidas tiene que haber una
+    // separación mínima de días hábiles y caer en distinto día de la semana.
+    const SEPARACION = { 1: 0, 2: 8, 3: 5, 4: 4 };
+
+    function generar() {
+      const dias = diasHabilesMes(anio, mes);
+      if (dias.length === 0) { mostrar('error', 'Ese mes no tiene días hábiles.'); return; }
+      const ausPorSup = {};
+      for (const a of ausencias) {
+        if (!ausPorSup[a.supervisor_id]) ausPorSup[a.supervisor_id] = new Set();
+        ausPorSup[a.supervisor_id].add(a.fecha);
+      }
+
+      const libre = {}, ocupa = {};
+      for (const s of supervisores) {
+        libre[s.id] = {}; ocupa[s.id] = {};
+        for (const d of dias) {
+          const iso = toISODate(d);
+          libre[s.id][iso] = ausPorSup[s.id]?.has(iso) ? 0 : 2;
+          ocupa[s.id][iso] = [];
+        }
+      }
+
+      // Las rutas "cada 2 meses" salen en los meses impares (enero, marzo, mayo…).
+      const mesImpar = (mes + 1) % 2 === 1;
+      const salidas = [];
+      for (const r of rutas) {
+        if (!r.supervisor_id) continue;
+        if (r.frecuencia === 'bimensual' && !mesImpar) continue;
+        const n = Math.max(1, Math.round(Number(r.veces_mes) || 1));
+        for (let i = 0; i < n; i++) salidas.push({ r, i, n });
+      }
+      salidas.sort((a, b) =>
+        (b.r.dias_seguidos - a.r.dias_seguidos) ||
+        (b.r.medios_dias - a.r.medios_dias) ||
+        (b.n - a.n) ||
+        a.r.nombre.localeCompare(b.r.nombre)
+      );
+
+      const puesto = {};
+      const colocadas = [];
+      const sinUbicar = [];
+
+      for (const sal of salidas) {
+        const r = sal.r, sup = r.supervisor_id;
+        const md = Number(r.medios_dias) || 1;
+        const seguidos = Math.max(1, Number(r.dias_seguidos) || 1);
+        const gap = SEPARACION[sal.n] ?? 4;
+        const ya = puesto[r.id] || [];
+        const wdYa = new Set(ya.map((i) => dias[i].getDay()));
+
+        const lo = Math.floor(dias.length * sal.i / sal.n);
+        const hi = Math.floor(dias.length * (sal.i + 1) / sal.n);
+        const pref = []; for (let i = lo; i < hi; i++) pref.push(i);
+        const resto = []; for (let i = 0; i < dias.length; i++) if (i < lo || i >= hi) resto.push(i);
+
+        let listo = false;
+        for (const relajarDia of [false, true]) {
+          for (const idx of pref.concat(resto)) {
+            const d = dias[idx], iso = toISODate(d);
+            if (ya.some((j) => Math.abs(idx - j) < gap)) continue;
+            if (!relajarDia && wdYa.has(d.getDay())) continue;
+
+            if (seguidos > 1) {
+              if (idx + seguidos > dias.length) continue;
+              const bloque = dias.slice(idx, idx + seguidos);
+              const consecutivos = (bloque[bloque.length - 1] - bloque[0]) / 86400000 === seguidos - 1;
+              if (!consecutivos) continue;
+              if (bloque.some((b) => libre[sup][toISODate(b)] < 2)) continue;
+              for (const b of bloque) { libre[sup][toISODate(b)] = 0; ocupa[sup][toISODate(b)].push({ r, md: 2 }); }
+              colocadas.push({ r, dias: bloque });
+              (puesto[r.id] = puesto[r.id] || []).push(idx);
+              listo = true; break;
+            }
+
+            if (libre[sup][iso] < md - 1e-9) continue;
+            const otros = ocupa[sup][iso];
+            if (otros.length && md < 2) {
+              if (otros.some((o) => o.md >= 2)) continue;
+              if (Math.min(...otros.map((o) => distanciaEntreRutas(r, o.r))) > 45) continue;
+            }
+            libre[sup][iso] -= md;
+            ocupa[sup][iso].push({ r, md });
+            colocadas.push({ r, dias: [d] });
+            (puesto[r.id] = puesto[r.id] || []).push(idx);
+            listo = true; break;
+          }
+          if (listo) break;
+        }
+        if (!listo) sinUbicar.push(r.nombre);
+      }
+
+      propuesta = { dias, libre, ocupa, colocadas, sinUbicar, ausPorSup };
+      document.getElementById('btnGuardar').disabled = false;
+      pintarCarga(); pintarAvisos(); pintarCalendario();
+      mostrar('ok', `Propuesta generada: ${colocadas.length} salidas en ${dias.length} días hábiles. Revísala y guárdala cuando estés de acuerdo.`);
+    }
+
+    // ---------- paneles ----------
+    function pintarCarga() {
+      const cont = document.getElementById('cargaSup');
+      cont.innerHTML = '';
+      if (!propuesta) return;
+      const { dias, libre, ausPorSup } = propuesta;
+      for (const s of supervisores) {
+        const cap = dias.reduce((a, d) => a + (ausPorSup[s.id]?.has(toISODate(d)) ? 0 : 2), 0);
+        const lib = dias.reduce((a, d) => a + libre[s.id][toISODate(d)], 0);
+        const usa = cap - lib;
+        const pct = cap > 0 ? Math.round((usa / cap) * 100) : 0;
+        const div = document.createElement('div');
+        div.className = 'stat-sup ' + supervisorClase(s.nombre_completo);
+        div.innerHTML = `<div class="n">${(lib / 2).toFixed(1)}</div>
+          <div class="lbl">${escapeHtml(s.nombre_completo)}<br>días libres · ${usa} de ${cap} medios días (${pct}%)</div>`;
+        cont.appendChild(div);
+      }
+    }
+
+    function pintarAvisos() {
+      const cont = document.getElementById('avisos');
+      cont.innerHTML = '';
+      if (!propuesta) return;
+      const avisos = [];
+
+      if (propuesta.sinUbicar.length) {
+        avisos.push(['error', `No se pudieron ubicar ${propuesta.sinUbicar.length} salida(s): ${propuesta.sinUbicar.join(', ')}. Ese supervisor no tiene días libres suficientes, o la ruta quedó aislada y no hay con qué compartir el día.`]);
+      }
+
+      // tope de Garcés
+      const mesImpar = (mes + 1) % 2 === 1;
+      let mdGarces = 0;
+      for (const r of rutas) {
+        if (r.frecuencia === 'bimensual' && !mesImpar) continue;
+        mdGarces += (Number(r.md_garces) || 0) * (Number(r.veces_mes) || 1);
+      }
+      if (mdGarces > TOPE_GARCES) {
+        avisos.push(['error', `Garcés queda en ${mdGarces} medios días este mes y lo contratado son ${TOPE_GARCES}: se pasa en ${(mdGarces - TOPE_GARCES).toFixed(1)}. Para bajarlo, pasa rutas a "Cada 2 meses" en la tabla de abajo.`]);
+      } else {
+        avisos.push(['ok', `Garcés queda en ${mdGarces} medios días este mes, dentro de los ${TOPE_GARCES} contratados.`]);
+      }
+
+      // metas: visitas por campo vs meta
+      const visitasPorCampo = new Map();
+      for (const c of propuesta.colocadas) {
+        for (const campo of c.r.campos) {
+          visitasPorCampo.set(campo.id, (visitasPorCampo.get(campo.id) || 0) + 1);
+        }
+      }
+      const bajo = [];
+      for (const r of rutas) {
+        for (const campo of r.campos) {
+          const n = visitasPorCampo.get(campo.id) || 0;
+          const meta = Number(campo.meta_mensual) || 0;
+          if (meta >= 1 && n < meta) bajo.push(`${campo.nombre} (${n} de ${meta})`);
+        }
+      }
+      if (bajo.length) avisos.push(['error', `Campos que quedan bajo su meta: ${[...new Set(bajo)].join(', ')}.`]);
+
+      cont.innerHTML = avisos.map(([t, txt]) => `<div class="msg msg-${t === 'error' ? 'error' : 'ok'}">${escapeHtml(txt)}</div>`).join('');
+    }
+
+    function pintarCalendario() {
+      const thead = document.querySelector('#tablaMes thead');
+      const tbody = document.querySelector('#tablaMes tbody');
+      thead.innerHTML = ''; tbody.innerHTML = '';
+      if (!propuesta) {
+        tbody.innerHTML = `<tr><td colspan="2" class="subtitle">Aprieta “Generar propuesta del mes” para ver el calendario.</td></tr>`;
+        return;
+      }
+      const { dias, ocupa, ausPorSup } = propuesta;
+
+      const tr1 = document.createElement('tr');
+      tr1.innerHTML = '<th rowspan="2">Fecha</th><th rowspan="2">Día</th>' +
+        supervisores.map((s) => `<th colspan="2">${escapeHtml(s.nombre_completo)}</th>`).join('');
+      const tr2 = document.createElement('tr');
+      tr2.innerHTML = supervisores.map(() => '<th>M</th><th>T</th>').join('');
+      thead.appendChild(tr1); thead.appendChild(tr2);
+
+      for (const d of dias) {
+        const iso = toISODate(d);
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td>${d.getDate()}</td><td>${nombreDia(d)}</td>`;
+        for (const s of supervisores) {
+          if (ausPorSup[s.id]?.has(iso)) {
+            const td = document.createElement('td');
+            td.colSpan = 2; td.className = 'celda-ausente';
+            td.textContent = 'No disponible';
+            tr.appendChild(td);
+            continue;
+          }
+          const slots = [[], []];
+          const cap = [1, 1];
+          for (const o of [...ocupa[s.id][iso]].sort((a, b) => b.md - a.md)) {
+            let resto = o.md;
+            let etq = o.r.nombre;
+            if (o.r.dias_seguidos > 1) {
+              const bloque = propuesta.colocadas.find((c) => c.r.id === o.r.id && c.dias.some((x) => toISODate(x) === iso));
+              if (bloque) etq += ` (día ${bloque.dias.findIndex((x) => toISODate(x) === iso) + 1} de ${bloque.dias.length})`;
+            }
+            for (let k = 0; k < 2 && resto > 1e-9; k++) {
+              if (cap[k] <= 1e-9) continue;
+              const toma = Math.min(cap[k], resto);
+              cap[k] -= toma; resto -= toma;
+              slots[k].push(etq + (toma >= 0.99 ? '' : ' (½ día)'));
+            }
+          }
+          for (const k of [0, 1]) {
+            const td = document.createElement('td');
+            td.className = 'celda-plan' + (slots[k].length ? ' con-visita' : '');
+            td.textContent = slots[k].join(' / ');
+            tr.appendChild(td);
+          }
+        }
+        tbody.appendChild(tr);
+      }
+    }
+
+    function pintarRutas() {
+      const filtro = document.getElementById('buscarRuta').value.trim().toLowerCase();
+      const tbody = document.querySelector('#tablaRutas tbody');
+      tbody.innerHTML = '';
+      const visibles = rutas.filter((r) =>
+        !filtro
+        || r.nombre.toLowerCase().includes(filtro)
+        || r.campos.some((c) => (c.nombre || '').toLowerCase().includes(filtro) || (c.cliente || '').toLowerCase().includes(filtro))
+      );
+      for (const r of visibles) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td><strong>${escapeHtml(r.nombre)}</strong>${r.notas ? `<div class="sub-campos">${escapeHtml(r.notas)}</div>` : ''}</td>
+          <td>${escapeHtml(r.tipo)}</td>
+          <td><span class="sub-campos">${escapeHtml(r.campos.map((c) => c.nombre).join(' · '))}</span></td>
+          <td>${r.medios_dias}</td>
+          <td></td><td></td><td></td>`;
+
+        const inpVeces = document.createElement('input');
+        inpVeces.type = 'number'; inpVeces.min = '1'; inpVeces.max = '6'; inpVeces.step = '1';
+        inpVeces.value = r.veces_mes; inpVeces.style.width = '60px';
+        inpVeces.addEventListener('change', () => actualizarRuta(r, { veces_mes: Number(inpVeces.value) }));
+        tr.children[4].appendChild(inpVeces);
+
+        const selFrec = document.createElement('select');
+        selFrec.innerHTML = `<option value="mensual">Todos los meses</option><option value="bimensual">Cada 2 meses</option>`;
+        selFrec.value = r.frecuencia;
+        selFrec.addEventListener('change', () => actualizarRuta(r, { frecuencia: selFrec.value }));
+        tr.children[5].appendChild(selFrec);
+
+        const selSup = document.createElement('select');
+        selSup.innerHTML = supervisores.map((s) => `<option value="${s.id}" ${s.id === r.supervisor_id ? 'selected' : ''}>${escapeHtml(s.nombre_completo)}</option>`).join('');
+        selSup.addEventListener('change', () => actualizarRuta(r, { supervisor_id: selSup.value }));
+        tr.children[6].appendChild(selSup);
+
+        tbody.appendChild(tr);
+      }
+    }
+
+    // Cualquier cambio de rutas o de ausencias deja la propuesta vieja sin valor:
+    // se limpia todo para no dejar números en pantalla que ya no corresponden.
+    function invalidar() {
+      propuesta = null;
+      document.getElementById('btnGuardar').disabled = true;
+      document.getElementById('avisos').innerHTML = '';
+      pintarCarga();
+      pintarCalendario();
+    }
+
+    async function actualizarRuta(r, cambios) {
+      const { error } = await sb.from('rutas').update(cambios).eq('id', r.id);
+      if (error) { mostrar('error', 'No se pudo guardar el cambio: ' + error.message); return; }
+      Object.assign(r, cambios);
+      invalidar();
+      mostrar('ok', `"${r.nombre}" actualizada. Vuelve a generar la propuesta para ver el efecto.`);
+    }
+
+    function pintarAusencias() {
+      const sel = document.getElementById('ausSup');
+      sel.innerHTML = supervisores.map((s) => `<option value="${s.id}">${escapeHtml(s.nombre_completo)}</option>`).join('');
+      const cont = document.getElementById('listaAusencias');
+      if (!ausencias.length) { cont.innerHTML = '<p class="subtitle">No hay días bloqueados.</p>'; return; }
+      const nombre = (id) => supervisores.find((s) => s.id === id)?.nombre_completo || '—';
+      cont.innerHTML = '';
+      const ul = document.createElement('div');
+      ul.className = 'aus-lista';
+      for (const a of ausencias) {
+        const chip = document.createElement('span');
+        chip.className = 'aus-chip';
+        const txt = document.createElement('span');
+        txt.textContent = `${nombre(a.supervisor_id)} · ${a.fecha}${a.motivo ? ' · ' + a.motivo : ''}`;
+        const x = document.createElement('button');
+        x.type = 'button'; x.textContent = '×'; x.className = 'aus-x'; x.title = 'Quitar este día';
+        x.addEventListener('click', () => quitarAusencia(a.id));
+        chip.appendChild(txt); chip.appendChild(x);
+        ul.appendChild(chip);
+      }
+      cont.appendChild(ul);
+    }
+
+    async function agregarAusencia() {
+      const supervisor_id = document.getElementById('ausSup').value;
+      const fecha = document.getElementById('ausFecha').value;
+      const motivo = document.getElementById('ausMotivo').value.trim() || null;
+      if (!fecha) { mostrar('error', 'Elige una fecha.'); return; }
+      const { error } = await sb.from('ausencias').insert({ supervisor_id, fecha, motivo });
+      if (error) { mostrar('error', 'No se pudo agregar: ' + error.message); return; }
+      document.getElementById('ausFecha').value = '';
+      document.getElementById('ausMotivo').value = '';
+      const { data } = await sb.from('ausencias').select('id, supervisor_id, fecha, motivo').order('fecha');
+      ausencias = data || [];
+      invalidar(); pintarAusencias();
+      mostrar('ok', 'Día bloqueado. Vuelve a generar la propuesta.');
+    }
+
+    async function quitarAusencia(id) {
+      const { error } = await sb.from('ausencias').delete().eq('id', id);
+      if (error) { mostrar('error', 'No se pudo quitar: ' + error.message); return; }
+      ausencias = ausencias.filter((a) => a.id !== id);
+      invalidar(); pintarAusencias();
+    }
+
+    // ---------- guardar / borrar ----------
+    function rangoMes() {
+      const desde = toISODate(new Date(anio, mes, 1));
+      const hasta = toISODate(new Date(anio, mes + 1, 0));
+      return { desde, hasta };
+    }
+
+    async function visitasDelMes() {
+      const { desde, hasta } = rangoMes();
+      const { data, error } = await sb.from('visitas').select('id, estado')
+        .gte('fecha_planificada', desde).lte('fecha_planificada', hasta);
+      if (error) { mostrar('error', 'No se pudo revisar el mes: ' + error.message); return null; }
+      return data || [];
+    }
+
+    async function guardar() {
+      if (!propuesta) return;
+      const existentes = await visitasDelMes();
+      if (existentes === null) return;
+      if (existentes.length) {
+        const hechas = existentes.filter((v) => v.estado === 'completada').length;
+        const aviso = hechas
+          ? `Este mes ya tiene ${existentes.length} visita(s), y ${hechas} están completadas. Guardar la plantilla ENCIMA duplicaría las visitas. Mejor borra primero las que no correspondan.\n\n¿Guardar de todas formas?`
+          : `Este mes ya tiene ${existentes.length} visita(s) planificadas. Se van a sumar a las nuevas.\n\n¿Guardar de todas formas?`;
+        if (!confirm(aviso)) return;
+      }
+
+      const filas = [];
+      for (const c of propuesta.colocadas) {
+        const campos = c.r.campos;
+        for (let i = 0; i < campos.length; i++) {
+          // en una vuelta de varios días, los campos se reparten entre los días
+          const j = c.dias.length === 1 ? 0 : Math.min(c.dias.length - 1, Math.floor(i * c.dias.length / campos.length));
+          filas.push({
+            campo_id: campos[i].id,
+            supervisor_id: c.r.supervisor_id,
+            fecha_planificada: toISODate(c.dias[j]),
+            estado: 'planificada',
+            creado_por: profile.id,
+          });
+        }
+      }
+      if (!filas.length) { mostrar('error', 'La propuesta no tiene visitas que guardar.'); return; }
+
+      // se inserta por tandas para no mandar un solo payload gigante
+      for (let i = 0; i < filas.length; i += 200) {
+        const { error } = await sb.from('visitas').insert(filas.slice(i, i + 200));
+        if (error) { mostrar('error', `Se guardaron ${i} visitas y falló el resto: ${error.message}`); return; }
+      }
+      mostrar('ok', `Se guardaron ${filas.length} visitas en ${MESES[mes]} ${anio}. Ya las puedes ver y mover en el Planificador semanal.`);
+      document.getElementById('btnGuardar').disabled = true;
+    }
+
+    async function borrarMes() {
+      const existentes = await visitasDelMes();
+      if (existentes === null) return;
+      if (!existentes.length) { mostrar('ok', 'Este mes no tiene visitas guardadas.'); return; }
+      const hechas = existentes.filter((v) => v.estado === 'completada').length;
+      let texto = `Vas a borrar ${existentes.length} visita(s) de ${MESES[mes]} ${anio}.`;
+      if (hechas) texto += ` OJO: ${hechas} están marcadas como completadas y se perdería ese historial.`;
+      texto += '\n\n¿Seguro?';
+      if (!confirm(texto)) return;
+      const { desde, hasta } = rangoMes();
+      const { error } = await sb.from('visitas').delete().gte('fecha_planificada', desde).lte('fecha_planificada', hasta);
+      if (error) { mostrar('error', 'No se pudo borrar: ' + error.message); return; }
+      mostrar('ok', `Se borraron ${existentes.length} visita(s) de ${MESES[mes]} ${anio}.`);
+    }
+
+    // ---------- pintar todo ----------
+    function pintarTodo() {
+      document.getElementById('mesLabel').textContent = `${MESES[mes]} ${anio}`;
+      document.getElementById('btnGuardar').disabled = !propuesta;
+      document.getElementById('msg').innerHTML = '';
+      document.getElementById('avisos').innerHTML = '';
+      pintarCarga(); pintarCalendario(); pintarRutas(); pintarAusencias();
+    }
+
+    if (await cargar()) pintarTodo();
+  </script>
+</body>
+</html>
