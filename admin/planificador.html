@@ -78,7 +78,9 @@
     document.getElementById('prevWeek').addEventListener('click', () => { monday = addDays(monday, -7); cargarTodo(); });
     document.getElementById('nextWeek').addEventListener('click', () => { monday = addDays(monday, 7); cargarTodo(); });
     document.getElementById('buscar').addEventListener('input', pintarTablaCampos);
-    document.getElementById('btnGuardarSeleccion').addEventListener('click', guardarSeleccion);
+       document.getElementById('btnGuardarSeleccion').addEventListener('click', guardarSeleccion);
+    document.getElementById('btnBorrarSemana').addEventListener('click', borrarSemana);
+    document.getElementById('btnBorrarMes').addEventListener('click', borrarMes);
 
     async function cargarSupervisores() {
       const { data, error } = await sb.from('profiles').select('id, nombre_completo').eq('activo', true).eq('rol', 'supervisor').order('nombre_completo');
