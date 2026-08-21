@@ -18,7 +18,7 @@
       <button class="secondary" id="nextWeek">Semana siguiente →</button>
     </div>
 
-        <div id="msg"></div>
+    <div id="msg"></div>
 
     <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px;">
       <button class="secondary" id="btnBorrarSemana">Borrar toda la semana</button>
@@ -33,8 +33,9 @@
     <h2>Agregar visitas a la semana</h2>
     <p class="subtitle" id="hintCandidatos">
       Los campos sin ninguna visita este mes aparecen marcados como <span class="tag-atrasado">atrasado</span>.
-      Los <span class="tag-grupo">grupo</span> son varios campos pegados de la misma agrícola: se agendan juntos en una sola fila y cuentan como una sola salida.
+      Los <span class="tag-grupo">grupo</span> son varios campos pegados de la misma agrícola: se agendan juntos en una sola fila.
       Los <span class="tag-cerca">cerca</span> siguen siendo campos independientes, pero al marcar uno se marcan solos los vecinos (puedes desmarcarlos).
+      En la columna Día, un ✓ significa que ese campo ya tiene visita ese día; igual lo puedes volver a agregar si quieres mandar 2 supervisores.
     </p>
     <div class="form-row" style="max-width:320px;">
       <div><input type="text" id="buscar" placeholder="Buscar por campo, agrícola, zona o comuna…" /></div>
@@ -69,16 +70,16 @@
 
     let supervisores = [];
     let campos = [];
-    let camposPorId = {};    // id -> campo (para saber a qué grupo pertenece cada visita)
-    let hechoPorCampo = {};  // campo_id -> n visitas completadas este mes calendario
-    let fechasPorCampo = {}; // campo_id -> días en que se visitó (para contar salidas de un grupo)
-    let planSemana = [];     // visitas ya existentes para la semana elegida
+    let camposPorId = {};   // id -> campo (para saber a qué grupo pertenece cada visita)
+    let hechoPorCampo = {}; // campo_id -> n visitas completadas este mes calendario
+    let fechasPorCampo = {}; // campo_id -> Set de fechas realizadas (para contar "salidas" de un grupo)
+    let planSemana = [];    // visitas ya existentes para la semana elegida
     let filtroSupervisorId = null; // null = "Todos"
 
     document.getElementById('prevWeek').addEventListener('click', () => { monday = addDays(monday, -7); cargarTodo(); });
     document.getElementById('nextWeek').addEventListener('click', () => { monday = addDays(monday, 7); cargarTodo(); });
     document.getElementById('buscar').addEventListener('input', pintarTablaCampos);
-       document.getElementById('btnGuardarSeleccion').addEventListener('click', guardarSeleccion);
+    document.getElementById('btnGuardarSeleccion').addEventListener('click', guardarSeleccion);
     document.getElementById('btnBorrarSemana').addEventListener('click', borrarSemana);
     document.getElementById('btnBorrarMes').addEventListener('click', borrarMes);
 
@@ -162,7 +163,7 @@
       const friday = addDays(monday, 4);
       const { data, error } = await sb
         .from('visitas')
-        .select('id, fecha_planificada, estado, campo_id, supervisor_id, campos(nombre, zona, comuna), profiles!visitas_supervisor_id_fkey(id, nombre_completo)')
+        .select('id, fecha_planificada, estado, campo_id, supervisor_id, campos(nombre, zona, comuna, cliente), profiles!visitas_supervisor_id_fkey(id, nombre_completo)')
         .gte('fecha_planificada', toISODate(monday))
         .lte('fecha_planificada', toISODate(friday))
         .neq('estado', 'cancelada')
@@ -200,6 +201,7 @@
             detalle: v.campos?.comuna || v.campos?.zona || '',
             supervisorId: v.supervisor_id,
             supervisorNombre: v.profiles?.nombre_completo,
+            agricolas: [v.campos?.cliente || ''],
             nCampos: 1,
             campos: [v.campos?.nombre || ''],
           });
@@ -213,6 +215,7 @@
             detalle: v.campos?.comuna || v.campos?.zona || '',
             supervisorId: v.supervisor_id,
             supervisorNombre: v.profiles?.nombre_completo,
+            agricolas: [],
             nCampos: 0,
             campos: [],
           };
@@ -221,6 +224,7 @@
         porClave[clave].ids.push(v.id);
         porClave[clave].nCampos++;
         porClave[clave].campos.push(v.campos?.nombre || '');
+        if (v.campos?.cliente) porClave[clave].agricolas.push(v.campos.cliente);
       }
       return bloques;
     }
@@ -280,6 +284,12 @@
               badge.textContent = `${b.nCampos} campos`;
               campoSpan.appendChild(badge);
             }
+            // La agrícola va en su propia línea, para no apretar el nombre del campo.
+            const agrSpan = document.createElement('span');
+            agrSpan.className = 'chip-agr';
+            const agricolas = [...new Set((b.agricolas || []).filter(Boolean))];
+            agrSpan.textContent = agricolas.join(' + ');
+
             const subSpan = document.createElement('span');
             subSpan.className = 'chip-sub';
             subSpan.textContent = `${b.supervisorNombre || 'Sin asignar'} · ${b.detalle}`;
@@ -323,6 +333,7 @@
             editar.appendChild(selDiaChip);
 
             info.appendChild(campoSpan);
+            if (agrSpan.textContent) info.appendChild(agrSpan);
             info.appendChild(subSpan);
             info.appendChild(editar);
 
@@ -398,6 +409,7 @@
       }
       await refrescar();
     }
+
     // Borrado masivo. Se avisa siempre cuántas visitas hay y cuántas están ya
     // completadas, porque esas son historial y no conviene perderlas.
     async function borrarRango(desde, hasta, etiqueta) {
@@ -434,6 +446,7 @@
       const MESES = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
       return borrarRango(toISODate(desde), toISODate(hasta), `${MESES[ref.getMonth()]} ${ref.getFullYear()}`);
     }
+
     // Arma las filas de la tabla: los grupos fijos ocupan UNA fila con todos
     // sus campos adentro; el resto (sueltos y grupos sugeridos) va fila a fila.
     function armarFilas(filtro) {
@@ -561,19 +574,20 @@
         ).join('');
         tdSup.appendChild(selSup);
 
-        // El campo puede volver a agregarse en otro día distinto (hay campos que se
-        // visitan 2 veces en la semana); solo bloqueamos repetir el MISMO día ya usado,
-        // y solo si queda al menos otro día libre para elegir.
+        // No se bloquea ningún día: se puede volver a agregar el mismo campo el mismo
+        // día (por ejemplo para mandar 2 supervisores juntos) o en otro día de la semana.
+        // Los días que ya tienen visita salen marcados con un ✓, solo como aviso.
         const tdDia = tr.children[9];
         const selDia = document.createElement('select');
         selDia.className = 'selDia';
         selDia.innerHTML = dias.map((d) => {
           const diaIso = toISODate(d);
-          const bloquear = diasUsados.has(diaIso) && diasUsados.size < dias.length;
-          return `<option value="${diaIso}" ${bloquear ? 'disabled' : ''}>${nombreDia(d)} ${fechaCorta(d)}</option>`;
+          const yaTiene = diasUsados.has(diaIso);
+          return `<option value="${diaIso}">${nombreDia(d)} ${fechaCorta(d)}${yaTiene ? ' ✓' : ''}</option>`;
         }).join('');
-        const primeraOpcionLibre = selDia.querySelector('option:not([disabled])');
-        if (primeraOpcionLibre) primeraOpcionLibre.selected = true;
+        // Por comodidad queda elegido el primer día que aún no tiene visita de este campo.
+        const primerLibre = dias.findIndex((d) => !diasUsados.has(toISODate(d)));
+        selDia.selectedIndex = primerLibre === -1 ? 0 : primerLibre;
         tdDia.appendChild(selDia);
 
         tbody.appendChild(tr);
@@ -593,7 +607,7 @@
             if (otro === chk || otro.checked) return;
             const trOtro = otro.closest('tr');
             const selDiaOtro = trOtro.querySelector('.selDia');
-            const opcion = Array.from(selDiaOtro.options).find((o) => o.value === dia && !o.disabled);
+            const opcion = Array.from(selDiaOtro.options).find((o) => o.value === dia);
             if (opcion) selDiaOtro.value = dia;
             if (sup) trOtro.querySelector('.selSup').value = sup;
             otro.checked = true;
