@@ -117,7 +117,7 @@
       const [rSup, rRutas, rRc, rAus] = await Promise.all([
         sb.from('profiles').select('id, nombre_completo').eq('activo', true).eq('rol', 'supervisor').order('nombre_completo'),
         sb.from('rutas').select('id, nombre, tipo, supervisor_id, medios_dias, veces_mes, frecuencia, dias_seguidos, md_garces, orden, notas').eq('activo', true).order('orden'),
-        sb.from('rutas_campos').select('ruta_id, campos(id, nombre, cliente, latitud, longitud, meta_mensual)'),
+              sb.from('rutas_campos').select('ruta_id, dia_offset, campos(id, nombre, cliente, latitud, longitud, meta_mensual)').order('dia_offset'),
         sb.from('ausencias').select('id, supervisor_id, fecha, motivo').order('fecha'),
       ]);
       for (const r of [rSup, rRutas, rRc, rAus]) {
@@ -128,7 +128,8 @@
       const porId = new Map(rutas.map((r) => [r.id, r]));
       for (const fila of rRc.data || []) {
         const r = porId.get(fila.ruta_id);
-        if (r && fila.campos) r.campos.push(fila.campos);
+                // dia_offset dice, en una vuelta de varios días, en cuál de los días va el campo
+        if (r && fila.campos) r.campos.push({ ...fila.campos, dia_offset: Number(fila.dia_offset) || 0 });
       }
       ausencias = rAus.data || [];
       return true;
