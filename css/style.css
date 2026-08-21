@@ -493,3 +493,45 @@ td.col-meta input.inline-edit { width: 62px; }
   .stat-sup { border: 1px solid #999 !important; background: #fff !important; color: #000 !important; }
   main { padding: 0; }
 }
+
+/* ---- Bitácora del campo ---- */
+.nota {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+}
+.nota.nota-pendiente { border-left-color: var(--danger); background: #fffaf9; }
+.nota-cab { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 6px; }
+.nota-fecha { font-weight: bold; font-size: 0.85rem; }
+.nota-autor { color: var(--muted); font-size: 0.8rem; margin-left: auto; }
+.nota-texto { margin: 0; white-space: pre-wrap; line-height: 1.45; }
+.nota-acciones { display: flex; gap: 8px; margin-top: 8px; }
+.nota-acciones button { font-size: 0.76rem; padding: 3px 9px; }
+.nota-mes {
+  margin: 18px 0 8px 0;
+  font-size: 0.95rem;
+  color: var(--primary);
+  text-transform: capitalize;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 4px;
+}
+.tag-tema {
+  background: #eef2f7;
+  color: #33507a;
+  border-radius: 6px;
+  padding: 1px 7px;
+  font-size: 0.74rem;
+  font-weight: bold;
+}
+textarea {
+  width: 100%;
+  font-family: inherit;
+  font-size: 0.92rem;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-sizing: border-box;
+}
