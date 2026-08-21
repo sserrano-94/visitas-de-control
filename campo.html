@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Ficha del campo — Control de Visitas</title>
+<link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <div class="topbar" id="topbar"></div>
+  <main>
+    <p class="subtitle" style="margin-bottom:6px;"><a href="mis-campos.html" id="volver">← Volver a la lista de campos</a></p>
+    <h1 id="titulo">Campo</h1>
+    <p class="subtitle" id="subtitle"></p>
+
+    <div id="msg"></div>
+
+    <div class="stats-semana" id="fichaCampo"></div>
+
+    <h2>Agregar anotación</h2>
+    <div class="card" id="cardNueva">
+      <div class="form-row">
+        <div>
+          <label for="nFecha">Fecha</label>
+          <input type="date" id="nFecha" />
+        </div>
+        <div>
+          <label for="nCategoria">Tema</label>
+          <select id="nCategoria">
+            <option value="General">General</option>
+            <option value="Riego">Riego</option>
+            <option value="Nutrición">Nutrición</option>
+            <option value="Plagas y enfermedades">Plagas y enfermedades</option>
+            <option value="Poda">Poda</option>
+            <option value="Raleo">Raleo</option>
+            <option value="Cosecha">Cosecha</option>
+            <option value="Maquinaria">Maquinaria</option>
+            <option value="Personal">Personal</option>
+            <option value="Infraestructura">Infraestructura</option>
+            <option value="Comercial">Comercial</option>
+          </select>
+        </div>
+        <div style="display:flex;align-items:flex-end;">
+          <label style="display:flex;align-items:center;gap:6px;font-weight:normal;">
+            <input type="checkbox" id="nPendiente" />
+            Queda pendiente
+          </label>
+        </div>
+      </div>
+      <div class="form-row">
+        <div style="flex:1 1 100%;">
+          <label for="nTexto">Qué se vio</label>
+          <textarea id="nTexto" rows="4" placeholder="Lo que se observó en el campo, acuerdos, cosas por resolver…"></textarea>
+        </div>
+      </div>
+      <div><button id="btnGuardarNota">Guardar anotación</button></div>
+    </div>
+
+    <h2 id="tituloPendientes" style="display:none;">Pendientes abiertos</h2>
+    <div id="pendientes"></div>
+
+    <h2>Bitácora</h2>
+    <div class="form-row" style="max-width:520px;">
+      <div>
+        <label for="fTema">Filtrar por tema</label>
+        <select id="fTema"><option value="">Todos</option></select>
+      </div>
+      <div>
+        <label for="fTexto">Buscar en el texto</label>
+        <input type="text" id="fTexto" placeholder="Palabra…" />
+      </div>
+    </div>
+    <div id="bitacora"></div>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script type="module">
+    import { sb } from './js/supabaseClient.js';
+    import { requireAuth, getProfile } from './js/auth.js';
+    import { renderTopbar } from './js/nav.js';
+    import { escapeHtml, toISODate, badgeSupervisor } from './js/helpers.js';
+
+    const session = await requireAuth('login.html');
+    if (!session) throw new Error('no-session');
+    const profile = await getProfile();
+    renderTopbar(profile, '');
+    const esAdmin = profile.rol === 'admin';
+
+    const campoId = new URLSearchParams(location.search).get('id');
+    let campo = null;
+    let notas = [];
+    let esAjeno = false;
+
+    document.getElementById('nFecha').value = toISODate(new Date());
+    document.getElementById('btnGuardarNota').addEventListener('click', guardarNota);
+    document.getElementById('fTema').addEventListener('change', pintarBitacora);
+    document.getElementById('fTexto').addEventListener('input', pintarBitacora);
+
+    function mostrar(tipo, texto) {
+      document.getElementById('msg').innerHTML = `<div class="msg msg-${tipo === 'error' ? 'error' : 'ok'}">${escapeHtml(texto)}</div>`;
+    }
+
+    if (!campoId) {
+      mostrar('error', 'No se indicó ningún campo. Vuelve a la lista y entra desde el nombre del campo.');
+      throw new Error('sin-id');
+    }
+
+    async function cargarCampo() {
+      const { data, error } = await sb.from('campos')
+        .select('id, nombre, cliente, zona, comuna, superficie_ha, meta_mensual, latitud, longitud, notas, supervisor_habitual_id, grupos_campos(nombre, tipo), profiles(nombre_completo)')
+        .eq('id', campoId).single();
+      if (error || !data) { mostrar('error', 'No se pudo cargar el campo: ' + (error?.message || 'no existe')); return false; }
+      campo = data;
+
+      document.getElementById('titulo').textContent = campo.nombre;
+      document.getElementById('subtitle').innerHTML =
+        `${escapeHtml(campo.cliente || 'Sin agrícola')} · ${escapeHtml(campo.comuna || '')} · a cargo de ${badgeSupervisor(campo.profiles?.nombre_completo)}`;
+
+      const ficha = document.getElementById('fichaCampo');
+      const filas = [
+        ['Hectáreas', campo.superficie_ha ? Number(campo.superficie_ha).toLocaleString('es-CL') : '—'],
+        ['Visitas al mes', campo.meta_mensual ?? '—'],
+        ['Zona', campo.zona || '—'],
+        ['Grupo', campo.grupos_campos?.nombre || 'sin grupo'],
+      ];
+      ficha.innerHTML = filas.map(([k, v]) =>
+        `<div class="stat-sup" style="background:#374151;"><div class="n" style="font-size:1.25rem;">${escapeHtml(String(v))}</div><div class="lbl">${escapeHtml(k)}</div></div>`
+      ).join('');
+
+      if (campo.latitud && campo.longitud) {
+        const a = document.createElement('a');
+        a.href = `https://www.google.com/maps?q=${campo.latitud},${campo.longitud}`;
+        a.target = '_blank'; a.rel = 'noopener';
+        a.className = 'stat-sup';
+        a.style.background = '#1F4E78';
+        a.style.textDecoration = 'none';
+        a.innerHTML = `<div class="n" style="font-size:1.1rem;">Ver mapa</div><div class="lbl">abrir en Google Maps</div>`;
+        ficha.appendChild(a);
+      }
+
+      // Solo puede escribir el supervisor a cargo o un administrador.
+      const puedeEscribir = esAdmin || campo.supervisor_habitual_id === profile.id;
+      esAjeno = !puedeEscribir;
+      if (esAjeno) {
+        document.getElementById('cardNueva').innerHTML =
+          '<p class="subtitle">Este campo no está a tu cargo: no puedes agregar anotaciones, y solo ves las que hayas escrito tú. La bitácora completa la ven el supervisor a cargo y los administradores.</p>';
+      }
+      return true;
+    }
+
+    async function cargarNotas() {
+      const { data, error } = await sb.from('bitacora')
+        .select('id, fecha, categoria, texto, pendiente, resuelto_en, autor_id, created_at, profiles(nombre_completo)')
+        .eq('campo_id', campoId)
+        .order('fecha', { ascending: false })
+        .order('created_at', { ascending: false });
+      if (error) { mostrar('error', 'No se pudo cargar la bitácora: ' + error.message); notas = []; return; }
+      // Lo más nuevo arriba, sin depender del orden en que llegue la consulta.
+      notas = (data || []).sort((a, b) =>
+        (b.fecha || '').localeCompare(a.fecha || '') || String(b.created_at).localeCompare(String(a.created_at))
+      );
+
+      const sel = document.getElementById('fTema');
+      const temas = [...new Set(notas.map((n) => n.categoria).filter(Boolean))].sort();
+      const actual = sel.value;
+      sel.innerHTML = '<option value="">Todos</option>' + temas.map((t) => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join('');
+      sel.value = actual;
+
+      pintarPendientes();
+      pintarBitacora();
+    }
+
+    async function guardarNota() {
+      const texto = document.getElementById('nTexto').value.trim();
+      if (!texto) { mostrar('error', 'Escribe algo antes de guardar.'); return; }
+      const fila = {
+        campo_id: campoId,
+        autor_id: profile.id,
+        fecha: document.getElementById('nFecha').value || toISODate(new Date()),
+        categoria: document.getElementById('nCategoria').value,
+        texto,
+        pendiente: document.getElementById('nPendiente').checked,
+      };
+      const { error } = await sb.from('bitacora').insert(fila);
+      if (error) { mostrar('error', 'No se pudo guardar: ' + error.message); return; }
+      document.getElementById('nTexto').value = '';
+      document.getElementById('nPendiente').checked = false;
+      mostrar('ok', 'Anotación guardada.');
+      await cargarNotas();
+    }
+
+    async function marcarResuelto(id, resolver) {
+      const { error } = await sb.from('bitacora')
+        .update({ pendiente: !resolver, resuelto_en: resolver ? toISODate(new Date()) : null })
+        .eq('id', id);
+      if (error) { mostrar('error', 'No se pudo actualizar: ' + error.message); return; }
+      await cargarNotas();
+    }
+
+    async function borrarNota(id) {
+      if (!confirm('¿Borrar esta anotación? No se puede recuperar.')) return;
+      const { error } = await sb.from('bitacora').delete().eq('id', id);
+      if (error) { mostrar('error', 'No se pudo borrar: ' + error.message); return; }
+      mostrar('ok', 'Anotación borrada.');
+      await cargarNotas();
+    }
+
+    function tarjetaNota(n, opts = {}) {
+      const puedeEditar = esAdmin || n.autor_id === profile.id;
+      const div = document.createElement('div');
+      div.className = 'nota' + (n.pendiente ? ' nota-pendiente' : '');
+
+      const cab = document.createElement('div');
+      cab.className = 'nota-cab';
+      cab.innerHTML = `
+        <span class="nota-fecha">${escapeHtml(n.fecha)}</span>
+        ${n.categoria ? `<span class="tag-tema">${escapeHtml(n.categoria)}</span>` : ''}
+        ${n.pendiente ? '<span class="tag-atrasado">pendiente</span>' : ''}
+        ${n.resuelto_en ? `<span class="tag-cerca">resuelto ${escapeHtml(n.resuelto_en)}</span>` : ''}
+        <span class="nota-autor">${escapeHtml(n.profiles?.nombre_completo || '')}</span>`;
+      div.appendChild(cab);
+
+      const p = document.createElement('p');
+      p.className = 'nota-texto';
+      p.textContent = n.texto;
+      div.appendChild(p);
+
+      if (puedeEditar) {
+        const acc = document.createElement('div');
+        acc.className = 'nota-acciones';
+        if (n.pendiente) {
+          const b = document.createElement('button');
+          b.type = 'button'; b.className = 'secondary'; b.textContent = 'Marcar como resuelto';
+          b.addEventListener('click', () => marcarResuelto(n.id, true));
+          acc.appendChild(b);
+        } else if (n.resuelto_en) {
+          const b = document.createElement('button');
+          b.type = 'button'; b.className = 'secondary'; b.textContent = 'Reabrir';
+          b.addEventListener('click', () => marcarResuelto(n.id, false));
+          acc.appendChild(b);
+        }
+        const bd = document.createElement('button');
+        bd.type = 'button'; bd.className = 'secondary'; bd.textContent = 'Borrar';
+        bd.addEventListener('click', () => borrarNota(n.id));
+        acc.appendChild(bd);
+        div.appendChild(acc);
+      }
+      if (opts.link) {
+        const a = document.createElement('a');
+        a.href = '#bitacora';
+        a.className = 'sub-campos';
+        a.textContent = 'ver en la bitácora';
+        div.appendChild(a);
+      }
+      return div;
+    }
+
+    function pintarPendientes() {
+      const cont = document.getElementById('pendientes');
+      const tit = document.getElementById('tituloPendientes');
+      const abiertos = notas.filter((n) => n.pendiente);
+      cont.innerHTML = '';
+      tit.style.display = abiertos.length ? '' : 'none';
+      for (const n of abiertos) cont.appendChild(tarjetaNota(n));
+    }
+
+    function pintarBitacora() {
+      const cont = document.getElementById('bitacora');
+      cont.innerHTML = '';
+      const tema = document.getElementById('fTema').value;
+      const txt = document.getElementById('fTexto').value.trim().toLowerCase();
+      const lista = notas.filter((n) =>
+        (!tema || n.categoria === tema) && (!txt || (n.texto || '').toLowerCase().includes(txt))
+      );
+      if (!lista.length) {
+        cont.innerHTML = esAjeno
+          ? '<p class="subtitle">No ves anotaciones porque este campo no está a tu cargo.</p>'
+          : '<p class="subtitle">Todavía no hay anotaciones para este campo.</p>';
+        return;
+      }
+      // Agrupadas por mes, para que la reunión sea fácil de recorrer.
+      const MESES = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
+      let mesActual = '';
+      for (const n of lista) {
+        const [y, m] = (n.fecha || '').split('-');
+        const clave = `${MESES[Number(m) - 1] || ''} ${y || ''}`;
+        if (clave !== mesActual) {
+          mesActual = clave;
+          const h = document.createElement('h3');
+          h.className = 'nota-mes';
+          h.textContent = clave;
+          cont.appendChild(h);
+        }
+        cont.appendChild(tarjetaNota(n));
+      }
+    }
+
+    if (await cargarCampo()) await cargarNotas();
+  </script>
+</body>
+</html>
