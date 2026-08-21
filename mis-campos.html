@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Mis campos — Control de Visitas</title>
+<link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <div class="topbar" id="topbar"></div>
+  <main>
+    <h1 id="titulo">Mis campos</h1>
+    <p class="subtitle" id="subtitle"></p>
+
+    <div class="card" id="cardFiltros">
+      <div class="form-row">
+        <div id="boxSup" style="display:none;">
+          <label for="fSupervisor">Supervisor</label>
+          <select id="fSupervisor"></select>
+        </div>
+        <div>
+          <label for="fBuscar">Buscar</label>
+          <input type="text" id="fBuscar" placeholder="Campo, agrícola, comuna o ruta…" />
+        </div>
+        <div>
+          <label for="fAgrupar">Ver agrupado por</label>
+          <select id="fAgrupar">
+            <option value="ruta">Ruta</option>
+            <option value="agricola">Agrícola</option>
+            <option value="comuna">Comuna</option>
+            <option value="ninguno">Sin agrupar</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <div id="msg"></div>
+
+    <div class="stats-semana" id="resumen"></div>
+
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px;">
+      <button class="secondary" id="btnCopiar">Copiar lista para WhatsApp</button>
+      <button class="secondary" id="btnCsv">Descargar Excel (CSV)</button>
+      <button class="secondary" id="btnImprimir">Imprimir / guardar PDF</button>
+    </div>
+
+    <div id="lista"></div>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script type="module">
+    import { sb } from './js/supabaseClient.js';
+    import { requireAuth, getProfile } from './js/auth.js';
+    import { renderTopbar } from './js/nav.js';
+    import { escapeHtml, toISODate, supervisorClase } from './js/helpers.js';
+
+    const session = await requireAuth('login.html');
+    if (!session) throw new Error('no-session');
+    const profile = await getProfile();
+    renderTopbar(profile, '');
+    const esAdmin = profile.rol === 'admin';
+
+    let supervisores = [];
+    let campos = [];         // campos del supervisor elegido
+    let rutaDeCampo = {};    // campo_id -> nombre de la ruta
+    let hechoPorCampo = {};  // campo_id -> visitas completadas este mes
+    let supervisorId = esAdmin ? null : profile.id;
+
+    document.getElementById('fBuscar').addEventListener('input', pintar);
+    document.getElementById('fAgrupar').addEventListener('change', pintar);
+    document.getElementById('btnCopiar').addEventListener('click', copiarLista);
+    document.getElementById('btnCsv').addEventListener('click', descargarCsv);
+    document.getElementById('btnImprimir').addEventListener('click', () => window.print());
+
+    function mostrar(tipo, texto) {
+      document.getElementById('msg').innerHTML = `<div class="msg msg-${tipo === 'error' ? 'error' : 'ok'}">${escapeHtml(texto)}</div>`;
+    }
+
+    function nombreSupervisor() {
+      if (!esAdmin) return profile.nombre_completo;
+      return supervisores.find((s) => s.id === supervisorId)?.nombre_completo || '';
+    }
+
+    async function cargarSupervisores() {
+      const { data, error } = await sb.from('profiles').select('id, nombre_completo')
+        .eq('activo', true).eq('rol', 'supervisor').order('nombre_completo');
+      if (error) { mostrar('error', 'No se pudieron cargar los supervisores: ' + error.message); return; }
+      supervisores = data || [];
+      if (!esAdmin) return;
+      document.getElementById('boxSup').style.display = '';
+      const sel = document.getElementById('fSupervisor');
+      sel.innerHTML = supervisores.map((s) => `<option value="${s.id}">${escapeHtml(s.nombre_completo)}</option>`).join('');
+      supervisorId = supervisores[0]?.id || null;
+      sel.value = supervisorId || '';
+      sel.addEventListener('change', () => { supervisorId = sel.value; cargar(); });
+    }
+
+    async function cargar() {
+      if (!supervisorId) { mostrar('error', 'No hay supervisores activos.'); return; }
+      document.getElementById('msg').innerHTML = '';
+      document.getElementById('titulo').textContent = esAdmin ? `Campos de ${nombreSupervisor()}` : 'Mis campos';
+      document.getElementById('subtitle').textContent = esAdmin
+        ? 'Elige un supervisor y cópiale o mándale su lista de campos.'
+        : `Los campos que tienes a cargo, ${profile.nombre_completo}.`;
+
+      const hoy = new Date();
+      const inicioMes = toISODate(new Date(hoy.getFullYear(), hoy.getMonth(), 1));
+      const finMes = toISODate(new Date(hoy.getFullYear(), hoy.getMonth() + 1, 0));
+
+      const [rCampos, rRc, rVis] = await Promise.all([
+        sb.from('campos')
+          .select('id, nombre, cliente, zona, comuna, superficie_ha, meta_mensual, notas, grupos_campos(nombre, tipo)')
+          .eq('activo', true).eq('supervisor_habitual_id', supervisorId)
+          .order('zona').order('comuna').order('nombre'),
+        sb.from('rutas_campos').select('campo_id, rutas(nombre, veces_mes, frecuencia)'),
+        sb.from('visitas').select('campo_id').eq('estado', 'completada')
+          .gte('fecha_realizada', inicioMes).lte('fecha_realizada', finMes),
+      ]);
+      if (rCampos.error) { mostrar('error', 'No se pudieron cargar los campos: ' + rCampos.error.message); return; }
+
+      campos = rCampos.data || [];
+      rutaDeCampo = {};
+      for (const f of rRc.data || []) {
+        if (f.rutas) rutaDeCampo[f.campo_id] = f.rutas;
+      }
+      hechoPorCampo = {};
+      for (const v of rVis.data || []) hechoPorCampo[v.campo_id] = (hechoPorCampo[v.campo_id] || 0) + 1;
+
+      pintar();
+    }
+
+    function filtrados() {
+      const t = document.getElementById('fBuscar').value.trim().toLowerCase();
+      if (!t) return campos;
+      return campos.filter((c) =>
+        (c.nombre || '').toLowerCase().includes(t)
+        || (c.cliente || '').toLowerCase().includes(t)
+        || (c.comuna || '').toLowerCase().includes(t)
+        || (c.zona || '').toLowerCase().includes(t)
+        || (rutaDeCampo[c.id]?.nombre || '').toLowerCase().includes(t)
+      );
+    }
+
+    function claveGrupo(c) {
+      const modo = document.getElementById('fAgrupar').value;
+      if (modo === 'agricola') return c.cliente || 'Sin agrícola';
+      if (modo === 'comuna') return c.comuna || 'Sin comuna';
+      if (modo === 'ruta') return rutaDeCampo[c.id]?.nombre || 'Sin ruta asignada';
+      return '';
+    }
+
+    function pintarResumen(lista) {
+      const cont = document.getElementById('resumen');
+      const ha = lista.reduce((a, c) => a + (Number(c.superficie_ha) || 0), 0);
+      const visitas = lista.reduce((a, c) => a + (Number(c.meta_mensual) || 0), 0);
+      const hechas = lista.reduce((a, c) => a + (hechoPorCampo[c.id] || 0), 0);
+      const agricolas = new Set(lista.map((c) => c.cliente).filter(Boolean)).size;
+      const cls = supervisorClase(nombreSupervisor());
+      cont.innerHTML = `
+        <div class="stat-sup ${cls}"><div class="n">${lista.length}</div><div class="lbl">campos a cargo</div></div>
+        <div class="stat-sup ${cls}"><div class="n">${agricolas}</div><div class="lbl">agrícolas</div></div>
+        <div class="stat-sup ${cls}"><div class="n">${ha.toLocaleString('es-CL')}</div><div class="lbl">hectáreas en total</div></div>
+        <div class="stat-sup ${cls}"><div class="n">${visitas}</div><div class="lbl">visitas al mes</div></div>
+        <div class="stat-sup ${cls}"><div class="n">${hechas}</div><div class="lbl">hechas este mes</div></div>`;
+    }
+
+    function pintar() {
+      const lista = filtrados();
+      pintarResumen(lista);
+      const cont = document.getElementById('lista');
+      cont.innerHTML = '';
+      if (!lista.length) {
+        cont.innerHTML = '<p class="subtitle">No hay campos con ese filtro.</p>';
+        return;
+      }
+
+      const modo = document.getElementById('fAgrupar').value;
+      const grupos = {};
+      for (const c of lista) {
+        const k = claveGrupo(c);
+        if (!grupos[k]) grupos[k] = [];
+        grupos[k].push(c);
+      }
+
+      for (const k of Object.keys(grupos).sort((a, b) => a.localeCompare(b))) {
+        const bloque = document.createElement('div');
+        bloque.className = 'dia-bloque';
+        if (modo !== 'ninguno') {
+          const h = document.createElement('h3');
+          const nHa = grupos[k].reduce((a, c) => a + (Number(c.superficie_ha) || 0), 0);
+          h.innerHTML = `${escapeHtml(k)} <span class="subtitle" style="font-weight:normal;font-size:0.82rem;">· ${grupos[k].length} campo(s) · ${nHa.toLocaleString('es-CL')} ha</span>`;
+          bloque.appendChild(h);
+        }
+        const tabla = document.createElement('table');
+        tabla.innerHTML = `<thead><tr>
+          <th>Campo</th><th>Agrícola</th><th>Comuna</th><th>Hectáreas</th>
+          <th>Visitas al mes</th><th>Hechas este mes</th><th>Ruta</th></tr></thead><tbody></tbody>`;
+        const tb = tabla.querySelector('tbody');
+        for (const c of grupos[k]) {
+          const hechas = hechoPorCampo[c.id] || 0;
+          const meta = Number(c.meta_mensual) || 0;
+          const ruta = rutaDeCampo[c.id];
+          const tr = document.createElement('tr');
+          tr.innerHTML = `
+            <td><strong>${escapeHtml(c.nombre)}</strong>${c.grupos_campos ? ` <span class="tag-${c.grupos_campos.tipo === 'fijo' ? 'grupo' : 'cerca'}">${escapeHtml(c.grupos_campos.nombre)}</span>` : ''}</td>
+            <td>${escapeHtml(c.cliente || '')}</td>
+            <td>${escapeHtml(c.comuna || '')}</td>
+            <td>${c.superficie_ha ? Number(c.superficie_ha).toLocaleString('es-CL') : '—'}</td>
+            <td>${meta || '—'}</td>
+            <td>${hechas}${meta && hechas < meta ? ` <span class="tag-atrasado">falta ${meta - hechas}</span>` : ''}</td>
+            <td><span class="sub-campos">${escapeHtml(ruta?.nombre || 'sin ruta')}</span></td>`;
+          tb.appendChild(tr);
+        }
+        bloque.appendChild(tabla);
+        cont.appendChild(bloque);
+      }
+    }
+
+    // ---------- para mandar ----------
+    function textoLista() {
+      const lista = filtrados();
+      const modo = document.getElementById('fAgrupar').value;
+      const grupos = {};
+      for (const c of lista) {
+        const k = claveGrupo(c);
+        if (!grupos[k]) grupos[k] = [];
+        grupos[k].push(c);
+      }
+      const ha = lista.reduce((a, c) => a + (Number(c.superficie_ha) || 0), 0);
+      const visitas = lista.reduce((a, c) => a + (Number(c.meta_mensual) || 0), 0);
+      const lineas = [
+        `CAMPOS A CARGO — ${nombreSupervisor()}`,
+        `${lista.length} campos · ${ha.toLocaleString('es-CL')} ha · ${visitas} visitas al mes`,
+        '',
+      ];
+      for (const k of Object.keys(grupos).sort((a, b) => a.localeCompare(b))) {
+        if (modo !== 'ninguno') lineas.push(`*${k}*`);
+        for (const c of grupos[k]) {
+          const partes = [c.nombre];
+          if (c.cliente) partes.push(c.cliente);
+          if (c.comuna) partes.push(c.comuna);
+          if (c.superficie_ha) partes.push(`${Number(c.superficie_ha).toLocaleString('es-CL')} ha`);
+          const meta = Number(c.meta_mensual) || 0;
+          if (meta) partes.push(`${meta} visita(s)/mes`);
+          lineas.push(`- ${partes.join(' · ')}`);
+        }
+        lineas.push('');
+      }
+      return lineas.join('\n').trim();
+    }
+
+    async function copiarLista() {
+      const texto = textoLista();
+      try {
+        await navigator.clipboard.writeText(texto);
+        mostrar('ok', 'Lista copiada. Pégala en WhatsApp o en un correo.');
+      } catch (e) {
+        // Si el navegador no deja usar el portapapeles, se muestra para copiar a mano.
+        const ta = document.createElement('textarea');
+        ta.value = texto;
+        ta.style.width = '100%';
+        ta.style.height = '260px';
+        const cont = document.getElementById('msg');
+        cont.innerHTML = '<div class="msg msg-ok">Tu navegador no dejó copiar solo. Selecciona el texto de abajo y cópialo con Ctrl+C.</div>';
+        cont.appendChild(ta);
+        ta.select();
+      }
+    }
+
+    function descargarCsv() {
+      const lista = filtrados();
+      const cab = ['Campo', 'Agricola', 'Zona', 'Comuna', 'Hectareas', 'Visitas al mes', 'Hechas este mes', 'Grupo', 'Ruta'];
+      const esc = (v) => `"${String(v ?? '').replaceAll('"', '""')}"`;
+      const filas = lista.map((c) => [
+        c.nombre, c.cliente, c.zona, c.comuna, c.superficie_ha ?? '',
+        c.meta_mensual ?? '', hechoPorCampo[c.id] || 0,
+        c.grupos_campos?.nombre || '', rutaDeCampo[c.id]?.nombre || '',
+      ].map(esc).join(';'));
+      // El BOM al principio es para que Excel en español abra bien los acentos.
+      const csv = '﻿' + [cab.map(esc).join(';'), ...filas].join('\r\n');
+      const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }));
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `campos-${nombreSupervisor().replaceAll(' ', '-').toLowerCase()}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      mostrar('ok', 'Se descargó el archivo. Ábrelo con Excel.');
+    }
+
+    await cargarSupervisores();
+    await cargar();
+  </script>
+</body>
+</html>
