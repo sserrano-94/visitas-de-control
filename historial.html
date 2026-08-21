@@ -52,6 +52,14 @@
       </thead>
       <tbody></tbody>
     </table>
+
+    <div class="week-nav" style="margin-top:26px;">
+      <button class="secondary" id="prevSemana">← Semana anterior</button>
+      <strong id="semanaLabel"></strong>
+      <button class="secondary" id="nextSemana">Semana siguiente →</button>
+    </div>
+    <p class="subtitle">Día por día, la semana completa. Al apretar un día del calendario, se muestra la semana de ese día.</p>
+    <div id="detalleSemana"></div>
   </main>
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
@@ -59,7 +67,7 @@
     import { sb } from './js/supabaseClient.js';
     import { requireAuth, getProfile } from './js/auth.js';
     import { renderTopbar } from './js/nav.js';
-    import { badgeSupervisor, escapeHtml, toISODate, supervisorClase } from './js/helpers.js';
+    import { badgeSupervisor, escapeHtml, toISODate, supervisorClase, mondayOf, addDays, nombreDia, fechaCorta, rangoSemanaTexto } from './js/helpers.js';
 
     const session = await requireAuth('login.html');
     if (!session) throw new Error('no-session');
@@ -87,6 +95,8 @@
     mesActual.setHours(0, 0, 0, 0);
     let diaSeleccionado = toISODate(new Date()); // por defecto, hoy (si cae en el mes mostrado)
     let visitasMes = [];
+    let semanaLunes = mondayOf(new Date());     // la semana que se muestra abajo, día por día
+    let visitasSemana = [];
 
     document.getElementById('prevMes').addEventListener('click', () => {
       mesActual.setMonth(mesActual.getMonth() - 1);
@@ -98,9 +108,11 @@
       diaSeleccionado = null;
       cargarMes();
     });
-    document.getElementById('fCampo').addEventListener('input', () => { pintarCalendario(); pintarDetalle(); });
-    document.getElementById('fSupervisor').addEventListener('change', cargarMes);
-    document.getElementById('fEstado').addEventListener('change', cargarMes);
+    document.getElementById('fCampo').addEventListener('input', () => { pintarCalendario(); pintarDetalle(); pintarSemana(); });
+    document.getElementById('fSupervisor').addEventListener('change', () => { cargarMes(); cargarSemana(); });
+    document.getElementById('fEstado').addEventListener('change', () => { cargarMes(); cargarSemana(); });
+    document.getElementById('prevSemana').addEventListener('click', () => { semanaLunes = addDays(semanaLunes, -7); cargarSemana(); });
+    document.getElementById('nextSemana').addEventListener('click', () => { semanaLunes = addDays(semanaLunes, 7); cargarSemana(); });
 
     async function cargarMes() {
       const msg = document.getElementById('msg');
@@ -131,6 +143,86 @@
       }
       pintarCalendario();
       pintarDetalle();
+    }
+
+    // La semana puede caer entre dos meses, así que se consulta aparte del mes.
+    async function cargarSemana() {
+      document.getElementById('semanaLabel').textContent = rangoSemanaTexto(semanaLunes);
+      const domingo = addDays(semanaLunes, 6);
+      let q = sb
+        .from('visitas')
+        .select('id, fecha_planificada, fecha_realizada, estado, notas, campos(nombre, zona, cliente), profiles!visitas_supervisor_id_fkey(nombre_completo)')
+        .gte('fecha_planificada', toISODate(semanaLunes))
+        .lte('fecha_planificada', toISODate(domingo))
+        .order('fecha_planificada');
+      const sup = document.getElementById('fSupervisor').value;
+      const estado = document.getElementById('fEstado').value;
+      if (sup) q = q.eq('supervisor_id', sup);
+      if (estado) q = q.eq('estado', estado);
+      const { data, error } = await q;
+      visitasSemana = error ? [] : (data || []);
+      pintarSemana();
+    }
+
+    function filtrarPorCampo(lista) {
+      const t = document.getElementById('fCampo').value.trim().toLowerCase();
+      if (!t) return lista;
+      return lista.filter((v) =>
+        (v.campos?.nombre || '').toLowerCase().includes(t) || (v.campos?.cliente || '').toLowerCase().includes(t)
+      );
+    }
+
+    // Un bloque por día de la semana, con la misma tabla que el detalle del día.
+    function pintarSemana() {
+      const cont = document.getElementById('detalleSemana');
+      cont.innerHTML = '';
+      const porDia = {};
+      for (const v of filtrarPorCampo(visitasSemana)) {
+        if (!porDia[v.fecha_planificada]) porDia[v.fecha_planificada] = [];
+        porDia[v.fecha_planificada].push(v);
+      }
+      const hoyIso = toISODate(new Date());
+      for (let i = 0; i < 7; i++) {
+        const d = addDays(semanaLunes, i);
+        const iso = toISODate(d);
+        const visitas = porDia[iso] || [];
+        // sábado y domingo solo aparecen si tienen algo agendado
+        if (i >= 5 && visitas.length === 0) continue;
+
+        const bloque = document.createElement('div');
+        bloque.className = 'dia-bloque' + (iso === hoyIso ? ' es-hoy' : '');
+        const h = document.createElement('h3');
+        h.innerHTML = `${nombreDia(d)} ${fechaCorta(d)}${iso === hoyIso ? ' <span class="tag-hoy">hoy</span>' : ''}
+          <span class="subtitle" style="font-weight:normal;font-size:0.82rem;">· ${visitas.length} visita(s)</span>`;
+        bloque.appendChild(h);
+
+        if (visitas.length === 0) {
+          const p = document.createElement('p');
+          p.className = 'subtitle';
+          p.textContent = 'Sin visitas.';
+          bloque.appendChild(p);
+        } else {
+          const tabla = document.createElement('table');
+          tabla.innerHTML = `<thead><tr><th>Campo</th><th>Zona</th><th>Supervisor</th><th>Estado</th><th>Fecha realizada</th><th>Notas</th></tr></thead><tbody></tbody>`;
+          const tb = tabla.querySelector('tbody');
+          for (const v of visitas) {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+              <td><strong>${escapeHtml(v.campos?.nombre || '')}</strong></td>
+              <td>${escapeHtml(v.campos?.zona || '')}</td>
+              <td>${badgeSupervisor(v.profiles?.nombre_completo)}</td>
+              <td><span class="estado-${v.estado}">${v.estado}</span></td>
+              <td>${v.fecha_realizada || '—'}</td>
+              <td>${escapeHtml(v.notas || '')}</td>`;
+            tb.appendChild(tr);
+          }
+          bloque.appendChild(tabla);
+        }
+        cont.appendChild(bloque);
+      }
+      if (!cont.children.length) {
+        cont.innerHTML = '<p class="subtitle">Esta semana no tiene visitas con los filtros actuales.</p>';
+      }
     }
 
     function visitasFiltradas() {
@@ -206,6 +298,11 @@
         diaSeleccionado = iso;
         pintarCalendario();
         pintarDetalle();
+        const nuevoLunes = mondayOf(date);
+        if (toISODate(nuevoLunes) !== toISODate(semanaLunes)) {
+          semanaLunes = nuevoLunes;
+          cargarSemana();
+        }
       });
       return celda;
     }
@@ -242,6 +339,7 @@
     }
 
     await cargarMes();
+    await cargarSemana();
   </script>
 </body>
 </html>
