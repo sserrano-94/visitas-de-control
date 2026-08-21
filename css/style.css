@@ -484,3 +484,12 @@ td.col-meta input.inline-edit { width: 62px; }
   opacity: 0.85;
   line-height: 1.2;
 }
+
+/* ---- Mis campos: que al imprimir salga limpio ---- */
+@media print {
+  .topbar, #cardFiltros, #msg, #btnCopiar, #btnCsv, #btnImprimir,
+  div:has(> #btnCopiar) { display: none !important; }
+  .dia-bloque { border: none; padding: 0; margin-bottom: 14px; break-inside: avoid; }
+  .stat-sup { border: 1px solid #999 !important; background: #fff !important; color: #000 !important; }
+  main { padding: 0; }
+}
