@@ -398,7 +398,42 @@
       }
       await refrescar();
     }
+    // Borrado masivo. Se avisa siempre cuántas visitas hay y cuántas están ya
+    // completadas, porque esas son historial y no conviene perderlas.
+    async function borrarRango(desde, hasta, etiqueta) {
+      const { data, error } = await sb.from('visitas').select('id, estado')
+        .gte('fecha_planificada', desde).lte('fecha_planificada', hasta);
+      if (error) { alert('No se pudo revisar: ' + error.message); return; }
+      const filas = data || [];
+      const msg = document.getElementById('msg');
+      if (!filas.length) {
+        msg.innerHTML = `<div class="msg msg-ok">${etiqueta} no tiene visitas para borrar.</div>`;
+        return;
+      }
+      const hechas = filas.filter((v) => v.estado === 'completada').length;
+      let texto = `Vas a borrar ${filas.length} visita(s) de ${etiqueta}.`;
+      if (hechas) texto += `\n\nOJO: ${hechas} ya están marcadas como completadas y se perdería ese historial.`;
+      texto += '\n\n¿Seguro?';
+      if (!confirm(texto)) return;
+      const { error: e2 } = await sb.from('visitas').delete()
+        .gte('fecha_planificada', desde).lte('fecha_planificada', hasta);
+      if (e2) { alert('No se pudo borrar: ' + e2.message); return; }
+      msg.innerHTML = `<div class="msg msg-ok">Se borraron ${filas.length} visita(s) de ${etiqueta}.</div>`;
+      await refrescar();
+    }
 
+    function borrarSemana() {
+      const viernes = addDays(monday, 4);
+      return borrarRango(toISODate(monday), toISODate(viernes), `la ${rangoSemanaTexto(monday).toLowerCase()}`);
+    }
+
+    function borrarMes() {
+      const ref = addDays(monday, 3); // el jueves define el mes al que pertenece la semana
+      const desde = new Date(ref.getFullYear(), ref.getMonth(), 1);
+      const hasta = new Date(ref.getFullYear(), ref.getMonth() + 1, 0);
+      const MESES = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
+      return borrarRango(toISODate(desde), toISODate(hasta), `${MESES[ref.getMonth()]} ${ref.getFullYear()}`);
+    }
     // Arma las filas de la tabla: los grupos fijos ocupan UNA fila con todos
     // sus campos adentro; el resto (sueltos y grupos sugeridos) va fila a fila.
     function armarFilas(filtro) {
