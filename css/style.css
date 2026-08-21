@@ -477,3 +477,10 @@ td.col-meta input.inline-edit { width: 62px; }
   font-size: 0.7rem;
   vertical-align: middle;
 }
+.chip .chip-agr {
+  display: block;
+  font-size: 0.68rem;
+  font-style: italic;
+  opacity: 0.85;
+  line-height: 1.2;
+}
